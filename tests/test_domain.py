@@ -5,7 +5,17 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from apps.api.app.models import Base, Notification, Role, Sector, TaskMember, User, UserStatus
+from apps.api.app.models import (
+    Base,
+    Notification,
+    Role,
+    Sector,
+    TaskChat,
+    TaskKind,
+    TaskMember,
+    User,
+    UserStatus,
+)
 from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import create_event, create_task, normalize_full_name, task_cleanup_at
@@ -100,6 +110,40 @@ async def test_group_task_needs_leader(session) -> None:
             ),
             "request-2",
         )
+
+
+@pytest.mark.asyncio
+async def test_group_task_creates_pending_chat_in_task_transaction(session) -> None:
+    creator = User(
+        telegram_id=10,
+        full_name="Creator User",
+        normalized_full_name="creator user",
+        status=UserStatus.ACTIVE,
+        role=Role.ADMIN,
+    )
+    leader = User(
+        telegram_id=11,
+        full_name="Leader User",
+        normalized_full_name="leader user",
+        status=UserStatus.ACTIVE,
+    )
+    session.add_all([creator, leader])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        creator,
+        TaskCreate(
+            title="Group task",
+            kind=TaskKind.GROUP,
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            leader_id=leader.id,
+            member_ids=[leader.id],
+        ),
+        "request-group-chat",
+    )
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    assert chat is not None
+    assert chat.telegram_chat_id is None
 
 
 @pytest.mark.asyncio

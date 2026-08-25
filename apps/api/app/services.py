@@ -15,6 +15,7 @@ from .models import (
     OutboxEvent,
     Role,
     Task,
+    TaskChat,
     TaskChecklistItem,
     TaskMember,
     User,
@@ -139,6 +140,8 @@ async def create_task(
     )
     session.add(task)
     await session.flush()
+    if task.kind.value == "group":
+        session.add(TaskChat(task_id=task.id))
     for user_id in member_ids:
         session.add(
             TaskMember(

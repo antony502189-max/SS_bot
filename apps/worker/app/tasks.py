@@ -178,10 +178,16 @@ async def provision_task_chat(task_id: str) -> None:
         chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
         if chat and chat.status == ChatStatus.READY:
             return
+        if chat and chat.telegram_chat_id:
+            chat.status = ChatStatus.DEGRADED
+            chat.last_error = "existing_group_requires_recovery"
+            await session.commit()
+            return
         if not chat:
             chat = TaskChat(task_id=task.id, status=ChatStatus.PENDING)
             session.add(chat)
             await session.flush()
+        chat.status = ChatStatus.CREATING
         try:
             async with TelegramUserService() as telegram:
                 created = await telegram.create_supergroup(

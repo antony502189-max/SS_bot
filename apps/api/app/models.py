@@ -53,7 +53,9 @@ class TaskStatus(enum.StrEnum):
 
 class ChatStatus(enum.StrEnum):
     PENDING = "pending_creation"
+    CREATING = "creating"
     READY = "ready"
+    DEGRADED = "degraded"
     CLEANUP_PENDING = "cleanup_pending"
     DELETED = "deleted"
     FAILED = "failed"

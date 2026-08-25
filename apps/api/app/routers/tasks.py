@@ -7,11 +7,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..dependencies import current_user
-from ..models import Role, Task, TaskChecklistItem, TaskMember, TaskStatus, User
+from ..models import (
+    ChatStatus,
+    OutboxEvent,
+    Role,
+    Task,
+    TaskChat,
+    TaskChatMember,
+    TaskChecklistItem,
+    TaskMember,
+    TaskStatus,
+    User,
+)
 from ..schemas import (
     ChecklistItemCreate,
     ChecklistItemOut,
     ChecklistUpdate,
+    TaskChatMemberOut,
+    TaskChatOut,
     TaskCreate,
     TaskDetail,
     TaskMemberCreate,
@@ -33,6 +46,30 @@ from ..services import (
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+async def chat_out(session: AsyncSession, chat: TaskChat) -> TaskChatOut:
+    rows = (
+        await session.execute(
+            select(TaskChatMember, User).join(User).where(TaskChatMember.task_chat_id == chat.id)
+        )
+    ).all()
+    return TaskChatOut(
+        id=chat.id,
+        telegram_chat_id=chat.telegram_chat_id,
+        status=chat.status,
+        last_error=chat.last_error,
+        cleanup_warned_at=chat.cleanup_warned_at,
+        members=[
+            TaskChatMemberOut(
+                user=UserOut.model_validate(user, from_attributes=True),
+                state=member.state,
+                next_reminder_at=member.next_reminder_at,
+                last_error=member.last_error,
+            )
+            for member, user in rows
+        ],
+    )
 
 
 async def task_for_manager(session: AsyncSession, task_id: uuid.UUID, actor: User) -> Task:
@@ -115,6 +152,50 @@ async def get_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return await task_detail(session, task)
+
+
+@router.get("/{task_id}/chat", response_model=TaskChatOut)
+async def get_task_chat(
+    task_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TaskChatOut:
+    if not await is_task_member(session, task_id, actor.id):
+        raise HTTPException(status_code=403, detail="Task membership required")
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task_id))
+    if not chat:
+        raise HTTPException(status_code=404, detail="This task has no working group")
+    return await chat_out(session, chat)
+
+
+@router.post("/{task_id}/chat/retry", response_model=TaskChatOut)
+async def retry_task_chat(
+    task_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TaskChatOut:
+    task = await task_for_manager(session, task_id, actor)
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if not chat:
+        raise HTTPException(status_code=422, detail="Only group tasks have a working group")
+    if chat.status == ChatStatus.READY:
+        raise HTTPException(status_code=422, detail="Working group is already active")
+    if chat.telegram_chat_id:
+        raise HTTPException(status_code=422, detail="Existing group requires member-level recovery")
+    chat.status = ChatStatus.PENDING
+    chat.last_error = None
+    session.add(
+        OutboxEvent(
+            event_type="TASK_CREATED",
+            aggregate_type="task",
+            aggregate_id=str(task.id),
+            payload={"task_id": str(task.id)},
+        )
+    )
+    await audit(session, actor.id, "task.chat_retry_requested", "task", task.id)
+    await session.commit()
+    await session.refresh(chat)
+    return await chat_out(session, chat)
 
 
 @router.patch("/{task_id}", response_model=TaskOut)

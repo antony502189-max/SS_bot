@@ -145,6 +145,22 @@ class TaskDetail(TaskOut):
     checklist: list["ChecklistItemOut"]
 
 
+class TaskChatMemberOut(BaseModel):
+    user: UserOut
+    state: str
+    next_reminder_at: datetime | None
+    last_error: str | None
+
+
+class TaskChatOut(BaseModel):
+    id: uuid.UUID
+    telegram_chat_id: int | None
+    status: str
+    last_error: str | None
+    cleanup_warned_at: datetime | None
+    members: list[TaskChatMemberOut]
+
+
 class TaskMemberCreate(BaseModel):
     user_id: uuid.UUID
 
