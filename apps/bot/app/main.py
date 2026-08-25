@@ -1,5 +1,6 @@
 import asyncio
 import os
+import uuid
 from datetime import UTC, datetime
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -24,7 +25,8 @@ from apps.api.app.models import (
     User,
     UserStatus,
 )
-from apps.api.app.services import normalize_full_name
+from apps.api.app.schemas import TaskCreate
+from apps.api.app.services import create_task, normalize_full_name
 
 router = Router()
 
@@ -33,9 +35,16 @@ class Registration(StatesGroup):
     full_name = State()
 
 
+class TaskIssue(StatesGroup):
+    title = State()
+    assignee = State()
+    deadline = State()
+
+
 menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Мои задачи"), KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="➕ Выдать задачу")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
@@ -166,6 +175,75 @@ async def help_message(message: Message) -> None:
     await message.answer(
         "Нажмите «Мои задачи», чтобы получить список текущих задач. "
         "В Mini App можно выполнять задачи, прикладывать отчёты и фотографии.",
+        reply_markup=menu_keyboard,
+    )
+
+
+@router.message(F.text == "➕ Выдать задачу")
+async def issue_task_start(message: Message, state: FSMContext) -> None:
+    user = await sync_user(message)
+    if user.role not in {Role.ADMIN, Role.SECTOR_HEAD}:
+        await message.answer("Выдавать задачи могут только администраторы и руководители секторов.")
+        return
+    await state.set_state(TaskIssue.title)
+    await message.answer("Введите название задачи.")
+
+
+@router.message(TaskIssue.title, F.text)
+async def issue_task_title(message: Message, state: FSMContext) -> None:
+    title = message.text.strip()
+    if len(title) < 2 or len(title) > 200:
+        await message.answer("Название должно содержать от 2 до 200 символов. Повторите ввод.")
+        return
+    await state.update_data(title=title)
+    await state.set_state(TaskIssue.assignee)
+    await message.answer("Введите @username исполнителя. Он должен уже зарегистрироваться в боте.")
+
+
+@router.message(TaskIssue.assignee, F.text)
+async def issue_task_assignee(message: Message, state: FSMContext) -> None:
+    username = message.text.strip().lstrip("@")
+    async with SessionLocal() as session:
+        assignee = await session.scalar(select(User).where(User.telegram_username == username))
+    if not assignee or assignee.status != UserStatus.ACTIVE:
+        await message.answer("Активный пользователь с таким @username не найден. Повторите ввод.")
+        return
+    await state.update_data(assignee_id=str(assignee.id))
+    await state.set_state(TaskIssue.deadline)
+    await message.answer("Введите срок в формате ДД.ММ.ГГГГ ЧЧ:ММ, например 31.12.2026 18:00.")
+
+
+@router.message(TaskIssue.deadline, F.text)
+async def issue_task_deadline(message: Message, state: FSMContext) -> None:
+    try:
+        deadline = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
+    except ValueError:
+        await message.answer("Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ.")
+        return
+    data = await state.get_data()
+    actor = await sync_user(message)
+    try:
+        async with SessionLocal() as session:
+            db_actor = await session.get(User, actor.id)
+            assert db_actor
+            task, _ = await create_task(
+                session,
+                db_actor,
+                TaskCreate(
+                    title=data["title"],
+                    deadline=deadline,
+                    member_ids=[uuid.UUID(data["assignee_id"])],
+                ),
+                str(uuid.uuid4()),
+            )
+            await session.commit()
+    except Exception:
+        await message.answer("Не удалось создать задачу. Проверьте срок и права доступа.")
+        await state.clear()
+        return
+    await state.clear()
+    await message.answer(
+        f"Задача «{task.title}» создана. Исполнитель увидит её в разделе «Мои задачи».",
         reply_markup=menu_keyboard,
     )
 
