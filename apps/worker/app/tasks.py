@@ -26,8 +26,8 @@ from apps.api.app.models import (
     User,
     UserStatus,
 )
-from apps.api.app.services import queue_task_notifications
-from apps.api.app.storage import delete_object
+from apps.api.app.services import queue_task_notifications, refresh_event_retention
+from apps.api.app.storage import delete_object, object_exists
 from apps.telegram_user_service.app.client import TelegramResultKind, TelegramUserService
 
 settings = get_settings()
@@ -598,6 +598,10 @@ async def _process_cleanup() -> None:
                         )
                 chat.cleanup_warned_at = now
             if task.cleanup_at <= now and chat.telegram_chat_id:
+                if not await archive_is_persisted(session, task):
+                    chat.status = ChatStatus.CLEANUP_PENDING
+                    chat.last_error = "archive_verification_failed"
+                    continue
                 chat.status = ChatStatus.CLEANUP_PENDING
                 try:
                     async with TelegramUserService() as telegram:
@@ -619,6 +623,25 @@ async def _process_cleanup() -> None:
                 except Exception as exc:
                     chat.last_error = type(exc).__name__
         await session.commit()
+
+
+async def archive_is_persisted(session, task: Task) -> bool:
+    """Keep Telegram disposable: do not delete a chat until stored artifacts are verifiable."""
+    if task.event_id:
+        await refresh_event_retention(session, task.event_id)
+    photos = list(
+        (
+            await session.scalars(
+                select(TaskPhoto)
+                .join(TaskReport, TaskPhoto.report_id == TaskReport.id)
+                .where(TaskReport.task_id == task.id)
+            )
+        ).all()
+    )
+    try:
+        return all(object_exists(photo.object_key) for photo in photos)
+    except Exception:
+        return False
 
 
 @celery_app.task(name="apps.worker.app.tasks.process_cleanup")
