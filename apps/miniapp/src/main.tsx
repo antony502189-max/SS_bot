@@ -13,6 +13,8 @@ type Detail = Task & { checklist: Item[]; members: { user: User; is_creator: boo
 type Chat = { status: string; telegram_chat_id: number | null }
 type Auth = { user: User; access_token: string }
 type TaskDraft = { title: string; deadline: string; kind: 'individual' | 'group'; description: string }
+type Event = { id: string; title: string; starts_at: string; retention_delete_at: string | null }
+type Archive = { event: Event; participants: User[]; tasks: { id: string; title: string; status: string; report: { photo_count: number } | null }[] }
 
 const headers = (token: string) => ({ Authorization: `Bearer ${token}` })
 async function api<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
@@ -29,6 +31,19 @@ async function auth(): Promise<Auth> {
 }
 const due = (value: string) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const Status = ({ value }: { value: string }) => <span className={`status status--${value}`}>{value.replaceAll('_', ' ')}</span>
+
+async function download(path: string, token: string, filename: string) {
+  const response = await fetch(`${API}${path}`, { headers: headers(token) })
+  if (!response.ok) throw new Error('Export is temporarily unavailable.')
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url)
+}
+
+function ArchiveSheet({ event, token, close }: { event: Event; token: string; close: () => void }) {
+  const archive = useQuery({ queryKey: ['archive', event.id], queryFn: () => api<Archive>(`/events/${event.id}/archive`, token) })
+  const exportFile = useMutation({ mutationFn: ({ path, name }: { path: string; name: string }) => download(path, token, name) })
+  return <section className="task-sheet"><div className="composer__heading"><div><span className="eyebrow">Event record</span><h2>{event.title}</h2></div><button className="icon-button" onClick={close} aria-label="Close archive">×</button></div>{archive.isLoading && <p>Loading archive…</p>}{archive.error && <p className="form-error">{archive.error.message}</p>}{archive.data && <><div className="task-meta"><span>{archive.data.participants.length} participants</span><span>{archive.data.tasks.length} tasks</span></div><section className="sheet-section"><h3>Archive contents</h3>{archive.data.tasks.map(task => <div className="archive-row" key={task.id}><span>{task.title}</span><Status value={task.status} /><small>{task.report?.photo_count ?? 0} photos</small></div>)}</section><section className="sheet-section export-actions"><h3>Downloads</h3><button className="secondary" disabled={exportFile.isPending} onClick={() => exportFile.mutate({ path: `/events/${event.id}/exports/pdf`, name: `${event.title}-archive.pdf` })}>Download PDF</button><button className="secondary" disabled={exportFile.isPending} onClick={() => exportFile.mutate({ path: `/events/${event.id}/exports/photos`, name: `${event.title}-photos.zip` })}>Download photos ZIP</button></section></>}{exportFile.error && <p className="form-error">{exportFile.error.message}</p>}</section>
+}
 
 function TaskComposer({ user, token, close }: { user: User; token: string; close: () => void }) {
   const [query, setQuery] = useState('')
@@ -63,13 +78,15 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
 function App() {
   const [selected, setSelected] = useState<Task | null>(null)
   const [composing, setComposing] = useState(false)
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null)
   const session = useQuery({ queryKey: ['auth'], queryFn: auth, retry: false })
   const tasks = useQuery({ queryKey: ['tasks', session.data?.user.id], queryFn: () => api<Task[]>('/tasks', session.data!.access_token), enabled: Boolean(session.data) })
   useEffect(() => { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand() }, [])
   if (session.isLoading) return <main className="centered">Opening your board…</main>
   if (session.error) return <main className="gate"><span className="mark">SS</span><h1>SS Board</h1><p>{session.error.message}</p></main>
   const { user, access_token: token } = session.data!
+  const events = useQuery({ queryKey: ['events'], queryFn: () => api<Event[]>('/events', token), enabled: user.role !== 'participant' })
   const open = tasks.data?.filter(task => ['active', 'returned', 'overdue'].includes(task.status)).length ?? 0
-  return <main className="shell"><header><div className="brand"><span className="mark">SS</span><div><span className="eyebrow">Operations field board</span><h1>Today’s work</h1></div></div><div className="profile"><strong>{user.full_name || 'Finish profile'}</strong><span>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram user'}</span></div></header><section className="summary"><div><span>Assigned</span><strong>{tasks.data?.length ?? 0}</strong></div><div><span>Open now</span><strong>{open}</strong></div><div><span>Role</span><strong>{user.role.replace('_', ' ')}</strong></div></section>{user.role !== 'participant' && <button className="new-task" onClick={() => setComposing(true)}><span>+</span> Assign work</button>}<section className="task-list"><div className="section-heading"><span className="eyebrow">Your queue</span><h2>Tasks</h2></div>{tasks.isLoading && <p>Loading tasks…</p>}{tasks.error && <p className="form-error">Tasks could not be loaded.</p>}{tasks.data?.length === 0 && <div className="empty"><span>◌</span><h3>Nothing assigned yet</h3><p>New work will appear here as soon as it is assigned.</p></div>}{tasks.data?.map(task => <button className="task-card" key={task.id} onClick={() => setSelected(task)}><div><Status value={task.status} /><h3>{task.title}</h3><p>{task.description || 'No description provided.'}</p></div><time>{due(task.deadline)}</time></button>)}</section>{(selected || composing) && <div className="sheet-backdrop">{composing ? <TaskComposer user={user} token={token} close={() => setComposing(false)} /> : <TaskSheet task={selected!} user={user} token={token} close={() => setSelected(null)} />}</div>}</main>
+  return <main className="shell"><header><div className="brand"><span className="mark">SS</span><div><span className="eyebrow">Operations field board</span><h1>Today’s work</h1></div></div><div className="profile"><strong>{user.full_name || 'Finish profile'}</strong><span>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram user'}</span></div></header><section className="summary"><div><span>Assigned</span><strong>{tasks.data?.length ?? 0}</strong></div><div><span>Open now</span><strong>{open}</strong></div><div><span>Role</span><strong>{user.role.replace('_', ' ')}</strong></div></section>{user.role !== 'participant' && <button className="new-task" onClick={() => setComposing(true)}><span>+</span> Assign work</button>}<section className="task-list"><div className="section-heading"><span className="eyebrow">Your queue</span><h2>Tasks</h2></div>{tasks.isLoading && <p>Loading tasks…</p>}{tasks.error && <p className="form-error">Tasks could not be loaded.</p>}{tasks.data?.length === 0 && <div className="empty"><span>◌</span><h3>Nothing assigned yet</h3><p>New work will appear here as soon as it is assigned.</p></div>}{tasks.data?.map(task => <button className="task-card" key={task.id} onClick={() => setSelected(task)}><div><Status value={task.status} /><h3>{task.title}</h3><p>{task.description || 'No description provided.'}</p></div><time>{due(task.deadline)}</time></button>)}</section>{user.role !== 'participant' && <section className="event-list"><div className="section-heading"><span className="eyebrow">Management</span><h2>Event archives</h2></div>{events.data?.map(event => <button className="event-card" key={event.id} onClick={() => setSelectedEvent(event)}><strong>{event.title}</strong><span>{due(event.starts_at)}</span></button>)}</section>}{(selected || composing || selectedEvent) && <div className="sheet-backdrop">{composing ? <TaskComposer user={user} token={token} close={() => setComposing(false)} /> : selectedEvent ? <ArchiveSheet event={selectedEvent} token={token} close={() => setSelectedEvent(null)} /> : <TaskSheet task={selected!} user={user} token={token} close={() => setSelected(null)} />}</div>}</main>
 }
 createRoot(document.getElementById('root')!).render(<QueryClientProvider client={client}><App /></QueryClientProvider>)
