@@ -9,6 +9,7 @@ from ..db import get_session
 from ..dependencies import current_user
 from ..models import (
     ChatStatus,
+    MembershipState,
     OutboxEvent,
     Role,
     Task,
@@ -65,6 +66,10 @@ async def chat_out(session: AsyncSession, chat: TaskChat) -> TaskChatOut:
                 user=UserOut.model_validate(user, from_attributes=True),
                 state=member.state,
                 next_reminder_at=member.next_reminder_at,
+                last_reminder_at=member.last_reminder_at,
+                reminder_count=member.reminder_count,
+                joined_at=member.joined_at,
+                last_checked_at=member.last_checked_at,
                 last_error=member.last_error,
             )
             for member, user in rows
@@ -198,6 +203,36 @@ async def retry_task_chat(
     return await chat_out(session, chat)
 
 
+@router.post("/{task_id}/chat/recover", response_model=TaskChatOut)
+async def recover_task_chat(
+    task_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TaskChatOut:
+    task = await task_for_manager(session, task_id, actor)
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if not chat or not chat.telegram_chat_id:
+        raise HTTPException(
+            status_code=422, detail="No existing working group is available to recover"
+        )
+    if chat.status == ChatStatus.READY:
+        raise HTTPException(status_code=422, detail="Working group is already active")
+    chat.status = ChatStatus.CREATING
+    chat.last_error = None
+    session.add(
+        OutboxEvent(
+            event_type="TASK_CHAT_RECOVERY_REQUESTED",
+            aggregate_type="task_chat",
+            aggregate_id=str(chat.id),
+            payload={"task_id": str(task.id)},
+        )
+    )
+    await audit(session, actor.id, "task.chat_recovery_requested", "task", task.id)
+    await session.commit()
+    await session.refresh(chat)
+    return await chat_out(session, chat)
+
+
 @router.patch("/{task_id}", response_model=TaskOut)
 async def update_task(
     task_id: uuid.UUID,
@@ -284,11 +319,63 @@ async def add_task_member(
     member = TaskMember(task_id=task.id, user_id=user.id)
     session.add(member)
     await queue_task_notifications(session, task, {user.id}, "TASK_ASSIGNED")
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if chat and chat.status == ChatStatus.READY and chat.telegram_chat_id:
+        session.add(
+            OutboxEvent(
+                event_type="TASK_CHAT_MEMBER_INVITE_REQUESTED",
+                aggregate_type="task_chat",
+                aggregate_id=str(chat.id),
+                payload={"task_id": str(task.id), "user_id": str(user.id)},
+            )
+        )
     await audit(session, actor.id, "task.member_added", "task", task.id, {"user_id": str(user.id)})
     await session.commit()
     return TaskMemberOut(
         user=UserOut.model_validate(user, from_attributes=True), is_creator=False, is_leader=False
     )
+
+
+@router.post("/{task_id}/chat/members/{user_id}/retry", response_model=TaskChatOut)
+async def retry_task_chat_member(
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TaskChatOut:
+    task = await task_for_manager(session, task_id, actor)
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if not chat or chat.status != ChatStatus.READY or not chat.telegram_chat_id:
+        raise HTTPException(status_code=422, detail="Working group is not ready")
+    if not await session.scalar(
+        select(TaskMember).where(TaskMember.task_id == task.id, TaskMember.user_id == user_id)
+    ):
+        raise HTTPException(status_code=404, detail="Task member not found")
+    member = await session.scalar(
+        select(TaskChatMember).where(
+            TaskChatMember.task_chat_id == chat.id, TaskChatMember.user_id == user_id
+        )
+    )
+    if member and member.state == MembershipState.JOINED:
+        raise HTTPException(status_code=422, detail="Member has already joined the working group")
+    session.add(
+        OutboxEvent(
+            event_type="TASK_CHAT_MEMBER_INVITE_REQUESTED",
+            aggregate_type="task_chat",
+            aggregate_id=str(chat.id),
+            payload={"task_id": str(task.id), "user_id": str(user_id)},
+        )
+    )
+    await audit(
+        session,
+        actor.id,
+        "task.chat_member_retry_requested",
+        "task",
+        task.id,
+        {"user_id": str(user_id)},
+    )
+    await session.commit()
+    return await chat_out(session, chat)
 
 
 @router.delete("/{task_id}/members/{user_id}", status_code=204)

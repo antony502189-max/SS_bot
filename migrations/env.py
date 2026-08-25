@@ -1,13 +1,16 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from alembic import context
 from apps.api.app.config import get_settings
 from apps.api.app.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("+asyncpg", ""))
+config.set_main_option(
+    "sqlalchemy.url",
+    get_settings().database_url.replace("+asyncpg", "").replace("+aiosqlite", ""),
+)
 if config.config_file_name:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata

@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from telethon import errors
 
 from apps.api.app.models import (
     Base,
@@ -19,6 +20,7 @@ from apps.api.app.models import (
 from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import create_event, create_task, normalize_full_name, task_cleanup_at
+from apps.telegram_user_service.app.client import TelegramResultKind, classify_error
 
 
 @pytest.fixture
@@ -46,6 +48,15 @@ def test_cleanup_is_not_before_deadline() -> None:
     completed = datetime(2026, 8, 25, tzinfo=UTC)
     assert task_cleanup_at(completed, completed + timedelta(days=7)) == completed + timedelta(
         days=7
+    )
+
+
+def test_mtproto_membership_errors_have_actionable_states() -> None:
+    already_member = classify_error(errors.UserAlreadyParticipantError(None))
+    assert already_member.kind == TelegramResultKind.SUCCESS
+    assert (
+        classify_error(errors.UserNotParticipantError(None)).kind
+        == TelegramResultKind.NOT_JOINED
     )
 
 

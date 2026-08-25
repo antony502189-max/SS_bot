@@ -65,6 +65,7 @@ class MembershipState(enum.StrEnum):
     PENDING = "pending"
     INVITED = "invited"
     JOINED = "joined"
+    NOT_JOINED = "not_joined"
     FAILED = "failed"
 
 
@@ -200,6 +201,12 @@ class TaskChatMember(UUIDTimestampMixin, Base):
     next_reminder_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    last_reminder_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reminder_count: Mapped[int] = mapped_column(Integer, default=0)
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (UniqueConstraint("task_chat_id", "user_id", name="uq_task_chat_member"),)
 

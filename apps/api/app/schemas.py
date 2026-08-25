@@ -149,6 +149,10 @@ class TaskChatMemberOut(BaseModel):
     user: UserOut
     state: str
     next_reminder_at: datetime | None
+    last_reminder_at: datetime | None
+    reminder_count: int
+    joined_at: datetime | None
+    last_checked_at: datetime | None
     last_error: str | None
 
 

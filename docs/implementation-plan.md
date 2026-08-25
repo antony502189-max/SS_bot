@@ -14,7 +14,7 @@ This is a greenfield implementation built from the target architecture. The firs
 | 3 Search | Partial | Normalization/search exists but lacks result sector shape, PostgreSQL trigram GIN index, and duplicate-name coverage. |
 | 4 Events | Partial | Creation/listing exists. Add retrieval, edits, participant lifecycle, sector guards, archive metadata. |
 | 5 Tasks | Partial | Creation, membership invariant, checklist, basic report transitions exist. Add task changes, cancellation, notifications, strict state machine. |
-| 6–10 Outbox/chat/invites/reminders | Partial | Adapters and basic worker exist. Add retry scheduling, pinned messages, reconciliation, status API, and Telegram adapter mocks. |
+| 6–10 Outbox/chat/invites/reminders | In progress | Durable outbox, state API, targeted re-invites, admin promotion, reminders, and ten-minute membership reconciliation exist. Add pinned task messages, chat-member removal, and adapter mocks. |
 | 11–14 Execution/notifications/cleanup | Partial | Presign/report/approval/cleanup skeleton exists. Add photo processing, notifications, overdue/deadline jobs, correct cleanup safeguards. |
 | 15–16 Archive/retention | Not started | Build archive data API, PDF/ZIP exports, extension, warning, purge. |
 | 17 Hardening | Not started | Webhooks, reverse proxy, structured logging, metrics, backups/runbooks, production CI/CD. |

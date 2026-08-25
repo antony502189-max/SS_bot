@@ -41,6 +41,10 @@ celery_app.conf.beat_schedule = {
         "task": "apps.worker.app.tasks.process_task_deadlines",
         "schedule": 300.0,
     },
+    "reconcile-task-chat-members-every-ten-minutes": {
+        "task": "apps.worker.app.tasks.reconcile_task_chat_members",
+        "schedule": 600.0,
+    },
 }
 
 
@@ -203,7 +207,7 @@ async def provision_task_chat(task_id: str) -> None:
                     chat.telegram_chat_id, settings.telegram_bot_username
                 )
                 if bot_result.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.FAILED
+                    chat.status = ChatStatus.DEGRADED
                     chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
                     await session.commit()
                     return
@@ -215,44 +219,65 @@ async def provision_task_chat(task_id: str) -> None:
                     ).all()
                 )
                 for member in members:
-                    user = await session.get(User, member.user_id)
-                    entry = TaskChatMember(task_chat_id=chat.id, user_id=member.user_id)
-                    session.add(entry)
-                    direct = await telegram.invite_user(
-                        chat.telegram_chat_id, user.telegram_username if user else None
-                    )
-                    if direct.kind == TelegramResultKind.SUCCESS:
-                        entry.state = MembershipState.JOINED
-                    elif direct.kind in {
-                        TelegramResultKind.PRIVACY_RESTRICTED,
-                        TelegramResultKind.USERNAME_NOT_FOUND,
-                    }:
-                        invite = await telegram.create_single_use_invite(
-                            chat.telegram_chat_id, f"task-{task.id}"
-                        )
-                        if invite.kind == TelegramResultKind.SUCCESS:
-                            entry.state = MembershipState.INVITED
-                            entry.invite_link = str(invite.value)
-                            entry.invite_link_created_at = datetime.now(UTC)
-                            entry.next_reminder_at = datetime.now(UTC) + timedelta(minutes=30)
-                            if user:
-                                await notify(
-                                    user.telegram_id,
-                                    f"Join the working group for ‘{task.title}’: {invite.value}",
-                                )
-                        else:
-                            entry.state = MembershipState.FAILED
-                            entry.last_error = invite.error or invite.kind.value
-                    else:
-                        entry.state = MembershipState.FAILED
-                        entry.last_error = direct.error or direct.kind.value
+                    await invite_task_chat_member(session, telegram, task, chat, member.user_id)
                 chat.status = ChatStatus.READY
         except Exception as exc:
-            chat.status = ChatStatus.FAILED
+            chat.status = ChatStatus.DEGRADED if chat.telegram_chat_id else ChatStatus.FAILED
             chat.last_error = type(exc).__name__
             raise
         finally:
             await session.commit()
+
+
+async def invite_task_chat_member(
+    session, telegram: TelegramUserService, task: Task, chat: TaskChat, user_id: uuid.UUID
+) -> None:
+    """Invite one assigned user, preserving an auditable delivery state for retries."""
+    if not chat.telegram_chat_id:
+        raise RuntimeError("Working group is missing its Telegram ID")
+    user = await session.get(User, user_id)
+    entry = await session.scalar(
+        select(TaskChatMember).where(
+            TaskChatMember.task_chat_id == chat.id, TaskChatMember.user_id == user_id
+        )
+    )
+    if not entry:
+        entry = TaskChatMember(task_chat_id=chat.id, user_id=user_id)
+        session.add(entry)
+        await session.flush()
+    if entry.invite_link:
+        await telegram.revoke_invite(chat.telegram_chat_id, entry.invite_link)
+    entry.invite_link = None
+    entry.invite_link_created_at = None
+    entry.next_reminder_at = None
+    entry.last_error = None
+    direct = await telegram.invite_user(
+        chat.telegram_chat_id, user.telegram_username if user else None
+    )
+    now = datetime.now(UTC)
+    if direct.kind == TelegramResultKind.SUCCESS:
+        entry.state = MembershipState.JOINED
+        entry.joined_at = entry.joined_at or now
+        entry.last_checked_at = now
+        return
+    if direct.kind not in {
+        TelegramResultKind.PRIVACY_RESTRICTED,
+        TelegramResultKind.USERNAME_NOT_FOUND,
+    }:
+        entry.state = MembershipState.FAILED
+        entry.last_error = direct.error or direct.kind.value
+        return
+    invite = await telegram.create_single_use_invite(chat.telegram_chat_id, f"task-{task.id}")
+    if invite.kind != TelegramResultKind.SUCCESS:
+        entry.state = MembershipState.FAILED
+        entry.last_error = invite.error or invite.kind.value
+        return
+    entry.state = MembershipState.INVITED
+    entry.invite_link = str(invite.value)
+    entry.invite_link_created_at = now
+    entry.next_reminder_at = now + timedelta(minutes=30)
+    if user:
+        await notify(user.telegram_id, f"Join the working group for ‘{task.title}’: {invite.value}")
 
 
 async def _process_outbox() -> None:
@@ -273,6 +298,12 @@ async def _process_outbox() -> None:
             try:
                 if event.event_type == "TASK_CREATED":
                     await provision_task_chat(event.payload["task_id"])
+                elif event.event_type == "TASK_CHAT_MEMBER_INVITE_REQUESTED":
+                    await _invite_requested_task_chat_member(
+                        event.payload["task_id"], event.payload["user_id"]
+                    )
+                elif event.event_type == "TASK_CHAT_RECOVERY_REQUESTED":
+                    await _recover_task_chat(event.payload["task_id"])
                 event.processed_at = datetime.now(UTC)
                 event.last_error = None
             except Exception as exc:
@@ -283,6 +314,69 @@ async def _process_outbox() -> None:
 @celery_app.task(name="apps.worker.app.tasks.process_outbox")
 def process_outbox() -> None:
     asyncio.run(_process_outbox())
+
+
+async def _invite_requested_task_chat_member(task_id: str, user_id: str) -> None:
+    async with SessionLocal() as session:
+        task = await session.get(Task, uuid.UUID(task_id))
+        if not task or task.kind != TaskKind.GROUP:
+            return
+        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+        if not chat or chat.status != ChatStatus.READY or not chat.telegram_chat_id:
+            raise RuntimeError("Working group is not ready for member invitation")
+        if not await session.scalar(
+            select(TaskMember).where(
+                TaskMember.task_id == task.id, TaskMember.user_id == uuid.UUID(user_id)
+            )
+        ):
+            return
+        async with TelegramUserService() as telegram:
+            await invite_task_chat_member(session, telegram, task, chat, uuid.UUID(user_id))
+        await session.commit()
+
+
+async def _recover_task_chat(task_id: str) -> None:
+    async with SessionLocal() as session:
+        task = await session.get(Task, uuid.UUID(task_id))
+        if not task or task.kind != TaskKind.GROUP:
+            return
+        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+        if not chat or not chat.telegram_chat_id:
+            raise RuntimeError("No existing Telegram working group to recover")
+        try:
+            async with TelegramUserService() as telegram:
+                bot_result = await telegram.add_bot(
+                    chat.telegram_chat_id, settings.telegram_bot_username
+                )
+                if bot_result.kind != TelegramResultKind.SUCCESS:
+                    chat.status = ChatStatus.DEGRADED
+                    chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
+                    await session.commit()
+                    return
+                members = list(
+                    (
+                        await session.scalars(
+                            select(TaskMember).where(TaskMember.task_id == task.id)
+                        )
+                    ).all()
+                )
+                for member in members:
+                    existing = await session.scalar(
+                        select(TaskChatMember).where(
+                            TaskChatMember.task_chat_id == chat.id,
+                            TaskChatMember.user_id == member.user_id,
+                        )
+                    )
+                    if not existing or existing.state != MembershipState.JOINED:
+                        await invite_task_chat_member(session, telegram, task, chat, member.user_id)
+                chat.status = ChatStatus.READY
+                chat.last_error = None
+        except Exception as exc:
+            chat.status = ChatStatus.DEGRADED
+            chat.last_error = type(exc).__name__
+            raise
+        finally:
+            await session.commit()
 
 
 async def _send_invite_reminders() -> None:
@@ -308,6 +402,8 @@ async def _send_invite_reminders() -> None:
                     user.telegram_id,
                     f"Reminder: join your task working group: {member.invite_link}",
                 )
+            member.last_reminder_at = now
+            member.reminder_count += 1
             member.next_reminder_at = now + timedelta(minutes=30)
         await session.commit()
 
@@ -315,6 +411,57 @@ async def _send_invite_reminders() -> None:
 @celery_app.task(name="apps.worker.app.tasks.send_invite_reminders")
 def send_invite_reminders() -> None:
     asyncio.run(_send_invite_reminders())
+
+
+async def _reconcile_task_chat_members() -> None:
+    """Confirm invite-link joins and spot users who left an otherwise active task chat."""
+    now = datetime.now(UTC)
+    async with SessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(TaskChatMember, TaskChat, User)
+                    .join(TaskChat, TaskChatMember.task_chat_id == TaskChat.id)
+                    .join(User, TaskChatMember.user_id == User.id)
+                    .where(
+                        TaskChat.status == ChatStatus.READY,
+                        TaskChat.telegram_chat_id.is_not(None),
+                        TaskChatMember.state.in_(
+                            [MembershipState.INVITED, MembershipState.JOINED]
+                        ),
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(100)
+                )
+            ).all()
+        )
+        if not rows:
+            return
+        async with TelegramUserService() as telegram:
+            for member, chat, user in rows:
+                result = await telegram.is_user_in_chat(
+                    chat.telegram_chat_id, user.telegram_username
+                )
+                member.last_checked_at = now
+                if result.kind == TelegramResultKind.SUCCESS:
+                    member.state = MembershipState.JOINED
+                    member.joined_at = member.joined_at or now
+                    member.next_reminder_at = None
+                    member.last_error = None
+                elif result.kind == TelegramResultKind.NOT_JOINED:
+                    if member.state == MembershipState.JOINED:
+                        member.state = MembershipState.NOT_JOINED
+                    member.last_error = None
+                elif result.kind == TelegramResultKind.USERNAME_NOT_FOUND:
+                    member.last_error = "username_unavailable_for_membership_check"
+                else:
+                    member.last_error = result.error or result.kind.value
+        await session.commit()
+
+
+@celery_app.task(name="apps.worker.app.tasks.reconcile_task_chat_members")
+def reconcile_task_chat_members() -> None:
+    asyncio.run(_reconcile_task_chat_members())
 
 
 async def _process_cleanup() -> None:
