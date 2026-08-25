@@ -41,10 +41,15 @@ class TaskIssue(StatesGroup):
     deadline = State()
 
 
+class AdminGrant(StatesGroup):
+    username = State()
+
+
 menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Мои задачи"), KeyboardButton(text="👤 Профиль")],
         [KeyboardButton(text="➕ Выдать задачу")],
+        [KeyboardButton(text="👑 Назначить администратора")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
@@ -177,6 +182,30 @@ async def help_message(message: Message) -> None:
         "В Mini App можно выполнять задачи, прикладывать отчёты и фотографии.",
         reply_markup=menu_keyboard,
     )
+
+
+@router.message(F.text == "👑 Назначить администратора")
+async def admin_grant_start(message: Message, state: FSMContext) -> None:
+    user = await sync_user(message)
+    if user.telegram_id not in get_settings().superadmin_ids:
+        await message.answer("Назначать администраторов может только главный администратор.")
+        return
+    await state.set_state(AdminGrant.username)
+    await message.answer("Введите @username зарегистрированного пользователя.")
+
+
+@router.message(AdminGrant.username, F.text)
+async def admin_grant_finish(message: Message, state: FSMContext) -> None:
+    username = message.text.strip().lstrip("@")
+    async with SessionLocal() as session:
+        target = await session.scalar(select(User).where(User.telegram_username == username))
+        if not target or target.status != UserStatus.ACTIVE:
+            await message.answer("Активный пользователь не найден. Повторите ввод.")
+            return
+        target.role = Role.ADMIN
+        await session.commit()
+    await state.clear()
+    await message.answer(f"@{username} назначен администратором задач.", reply_markup=menu_keyboard)
 
 
 @router.message(F.text == "➕ Выдать задачу")

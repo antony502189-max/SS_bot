@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_presign_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     bootstrap_admin_telegram_ids: str = ""
+    superadmin_telegram_ids: str = ""
 
     @field_validator("telegram_api_id", mode="before")
     @classmethod
@@ -51,6 +52,10 @@ class Settings(BaseSettings):
         return {
             int(value) for value in self.bootstrap_admin_telegram_ids.split(",") if value.strip()
         }
+
+    @property
+    def superadmin_ids(self) -> set[int]:
+        return {int(value) for value in self.superadmin_telegram_ids.split(",") if value.strip()}
 
 
 @lru_cache
