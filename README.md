@@ -57,3 +57,5 @@ Use the production edge configuration with `docker compose -f docker-compose.yml
 Move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
 
 JSON logs include `request_id`, method, path, status, and duration. Forward container logs to your observability platform, alert on `/readyz` failures, and test database restore plus object-storage restore on a regular schedule.
+
+See the [production operations runbook](docs/operations-runbook.md) for deployment, staging acceptance, backup/restore, rollback, and incident-response procedures.
