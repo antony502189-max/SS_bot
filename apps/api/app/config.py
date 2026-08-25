@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     archive_delete_warning_days: int = Field(default=30, ge=1, le=365)
     telegram_bot_token: str = ""
     telegram_bot_username: str = ""
+    telegram_webhook_url: str = ""
+    telegram_webhook_path: str = "/webhook"
     telegram_webhook_secret: str = ""
     mini_app_url: str = "http://localhost:5173"
     telegram_api_id: int | None = None

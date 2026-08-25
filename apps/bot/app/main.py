@@ -7,6 +7,8 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ChatMemberUpdated, Message
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from sqlalchemy import select
 
 from apps.api.app.config import get_settings
@@ -113,12 +115,30 @@ async def membership_changed(update: ChatMemberUpdated) -> None:
 
 
 async def run() -> None:
+    settings = get_settings()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
     bot = Bot(token)
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+    if settings.telegram_webhook_url:
+        path = settings.telegram_webhook_path
+        if not path.startswith("/"):
+            path = f"/{path}"
+        await bot.set_webhook(
+            url=f"{settings.telegram_webhook_url.rstrip('/')}{path}",
+            secret_token=settings.telegram_webhook_secret or None,
+            allowed_updates=["message", "chat_member"],
+        )
+        application = web.Application()
+        SimpleRequestHandler(
+            dispatcher=dispatcher, bot=bot, secret_token=settings.telegram_webhook_secret or None
+        ).register(application, path=path)
+        setup_application(application, dispatcher, bot=bot)
+        await web._run_app(application, host="0.0.0.0", port=8081)
+        return
+    await bot.delete_webhook(drop_pending_updates=False)
     await dispatcher.start_polling(bot, allowed_updates=["message", "chat_member"])
 
 

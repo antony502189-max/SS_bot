@@ -36,7 +36,7 @@ The development default uses SQLite; Docker uses PostgreSQL and runs `alembic up
 ## Telegram onboarding
 
 1. Create the bot with BotFather and configure the Mini App URL with HTTPS in production.
-2. Set the bot’s webhook to the deployment URL in production; local development uses polling.
+2. In production set `TELEGRAM_WEBHOOK_URL` to the public HTTPS base URL and keep a long random `TELEGRAM_WEBHOOK_SECRET`; the bot serves the configured `TELEGRAM_WEBHOOK_PATH` (default `/webhook`). Local development uses polling.
 3. Create a separate Telegram user account for MTProto group operations. Authorize its Telethon session interactively in a protected environment, then mount the resulting session file where `TELEGRAM_SERVICE_SESSION_PATH` points.
 4. Add the bot to a non-production test group first and verify its limited admin permissions and `chat_member` updates.
 
