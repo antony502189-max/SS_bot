@@ -15,7 +15,7 @@ This is a greenfield implementation built from the target architecture. The firs
 | 4 Events | Partial | Creation/listing exists. Add retrieval, edits, participant lifecycle, sector guards, archive metadata. |
 | 5 Tasks | Partial | Creation, membership invariant, checklist, basic report transitions exist. Add task changes, cancellation, notifications, strict state machine. |
 | 6–10 Outbox/chat/invites/reminders | In progress | Durable outbox, state API, targeted re-invites, admin promotion, reminders, and ten-minute membership reconciliation exist. Add pinned task messages, chat-member removal, and adapter mocks. |
-| 11–14 Execution/notifications/cleanup | In progress | Presign/report/approval, report notifications, overdue/deadline jobs, and cleanup lifecycle exist. Add server-side photo inspection/previews and cleanup persistence safeguards. |
+| 11–14 Execution/notifications/cleanup | In progress | Presign/report/approval, report notifications, overdue/deadline jobs, cleanup lifecycle, server-side image inspection, and preview generation exist. Add storage integration tests and cleanup persistence safeguards. |
 | 15–16 Archive/retention | In progress | Event archive API, PDF/ZIP downloads, one-year scheduling, 30-day alerts, extensions, and soft purge exist. Add generated-export persistence and storage integration tests. |
 | 17 Hardening | Not started | Webhooks, reverse proxy, structured logging, metrics, backups/runbooks, production CI/CD. |
 

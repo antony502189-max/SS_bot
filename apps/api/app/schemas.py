@@ -239,3 +239,17 @@ class UploadTarget(BaseModel):
     object_key: str
     upload_url: str
     fields: dict[str, str] = Field(default_factory=dict)
+
+
+class PhotoComplete(BaseModel):
+    object_key: str = Field(min_length=1, max_length=500)
+
+
+class PhotoOut(BaseModel):
+    id: uuid.UUID
+    content_type: str
+    size_bytes: int
+    preview_object_key: str | None
+    width: int | None
+    height: int | None
+    model_config = {"from_attributes": True}

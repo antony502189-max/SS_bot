@@ -1,5 +1,6 @@
 import re
 import uuid
+from dataclasses import dataclass
 
 import boto3
 from botocore.config import Config
@@ -8,6 +9,12 @@ from botocore.exceptions import ClientError
 from .config import get_settings
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+@dataclass(frozen=True)
+class ObjectMetadata:
+    content_type: str
+    size_bytes: int
 
 
 def _client():
@@ -54,6 +61,17 @@ def object_exists(object_key: str) -> bool:
     return True
 
 
+def object_metadata(object_key: str) -> ObjectMetadata:
+    client = _client()
+    if client is None:
+        raise RuntimeError("Object storage is not configured")
+    response = client.head_object(Bucket=get_settings().s3_bucket, Key=object_key)
+    return ObjectMetadata(
+        content_type=str(response.get("ContentType") or ""),
+        size_bytes=int(response["ContentLength"]),
+    )
+
+
 def get_object_bytes(object_key: str) -> bytes:
     client = _client()
     if client is None:
@@ -67,3 +85,15 @@ def delete_object(object_key: str) -> None:
     if client is None:
         raise RuntimeError("Object storage is not configured")
     client.delete_object(Bucket=get_settings().s3_bucket, Key=object_key)
+
+
+def put_object(object_key: str, body: bytes, content_type: str) -> None:
+    client = _client()
+    if client is None:
+        raise RuntimeError("Object storage is not configured")
+    client.put_object(
+        Bucket=get_settings().s3_bucket,
+        Key=object_key,
+        Body=body,
+        ContentType=content_type,
+    )

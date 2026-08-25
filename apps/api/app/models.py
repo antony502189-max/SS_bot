@@ -183,6 +183,9 @@ class TaskPhoto(UUIDTimestampMixin, Base):
     object_key: Mapped[str] = mapped_column(String(500), unique=True)
     content_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int] = mapped_column(Integer)
+    preview_object_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uploaded_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
 
