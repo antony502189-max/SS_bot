@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from apps.api.app.models import Base, Role, TaskMember, User, UserStatus
 from apps.api.app.schemas import TaskCreate
+from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import create_task, normalize_full_name, task_cleanup_at
 
 
@@ -23,6 +24,12 @@ async def session():
 
 def test_full_name_normalization() -> None:
     assert normalize_full_name("  Ada   Lovelace ") == "ada lovelace"
+    assert normalize_full_name("  Ёлкин\u00a0Пётр ") == "елкин петр"
+
+
+def test_signed_session_round_trip() -> None:
+    token = issue_access_token("08a093e2-5b38-44be-9e6e-ae4e935c39fc", "test-secret", 5)
+    assert verify_access_token(token, "test-secret") == "08a093e2-5b38-44be-9e6e-ae4e935c39fc"
 
 
 def test_cleanup_is_not_before_deadline() -> None:

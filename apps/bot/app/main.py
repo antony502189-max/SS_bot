@@ -9,8 +9,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ChatMemberUpdated, Message
 from sqlalchemy import select
 
+from apps.api.app.config import get_settings
 from apps.api.app.db import SessionLocal
-from apps.api.app.models import MembershipState, TaskChat, TaskChatMember, User, UserStatus
+from apps.api.app.models import MembershipState, Role, TaskChat, TaskChatMember, User, UserStatus
 from apps.api.app.services import normalize_full_name
 
 router = Router()
@@ -26,10 +27,20 @@ async def sync_user(message: Message) -> User:
     async with SessionLocal() as session:
         user = await session.scalar(select(User).where(User.telegram_id == telegram_user.id))
         if not user:
-            user = User(telegram_id=telegram_user.id, telegram_username=telegram_user.username)
+            user = User(
+                telegram_id=telegram_user.id,
+                telegram_username=telegram_user.username,
+                role=(
+                    Role.ADMIN
+                    if telegram_user.id in get_settings().bootstrap_admin_ids
+                    else Role.PARTICIPANT
+                ),
+            )
             session.add(user)
         else:
             user.telegram_username = telegram_user.username
+            if user.status == UserStatus.NEEDS_USERNAME and telegram_user.username:
+                user.status = UserStatus.ACTIVE
         user.last_seen_at = datetime.now(UTC)
         await session.commit()
         await session.refresh(user)
@@ -39,6 +50,11 @@ async def sync_user(message: Message) -> User:
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
     user = await sync_user(message)
+    if user.status == UserStatus.NEEDS_USERNAME:
+        await message.answer(
+            "Set a Telegram username, then send /start again to activate your profile."
+        )
+        return
     if user.status != UserStatus.ACTIVE:
         await state.set_state(Registration.full_name)
         await message.answer("Welcome. Please send your full name to complete registration.")
@@ -58,10 +74,15 @@ async def receive_full_name(message: Message, state: FSMContext) -> None:
         assert db_user
         db_user.full_name = full_name
         db_user.normalized_full_name = normalize_full_name(full_name)
-        db_user.status = UserStatus.ACTIVE
+        db_user.status = (
+            UserStatus.ACTIVE if db_user.telegram_username else UserStatus.NEEDS_USERNAME
+        )
         await session.commit()
     await state.clear()
-    await message.answer("Registration complete. Your profile is ready.")
+    if db_user.status == UserStatus.NEEDS_USERNAME:
+        await message.answer("Full name saved. Set a Telegram username, then send /start again.")
+    else:
+        await message.answer("Registration complete. Your profile is ready.")
 
 
 @router.chat_member()

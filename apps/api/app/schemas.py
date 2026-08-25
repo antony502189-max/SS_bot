@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from .models import Role, TaskKind, TaskStatus
+from .models import Role, TaskKind, TaskStatus, UserStatus
 
 
 class TelegramIdentity(BaseModel):
@@ -27,6 +27,22 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AuthenticatedUser(BaseModel):
+    user: UserOut
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserAdminUpdate(BaseModel):
+    role: Role | None = None
+    sector_id: uuid.UUID | None = None
+    status: UserStatus | None = None
+
+
+class UserSearchResult(UserOut):
+    sector_name: str | None = None
+
+
 class SectorCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
@@ -37,6 +53,12 @@ class SectorOut(BaseModel):
     name: str
     description: str | None
     model_config = {"from_attributes": True}
+
+
+class SectorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    is_active: bool | None = None
 
 
 class EventCreate(BaseModel):

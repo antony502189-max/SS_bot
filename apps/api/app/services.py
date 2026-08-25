@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -24,7 +25,8 @@ _SPACE = re.compile(r"\s+")
 
 
 def normalize_full_name(value: str) -> str:
-    return _SPACE.sub(" ", value.strip()).casefold()
+    normalized = unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")
+    return _SPACE.sub(" ", normalized.strip())
 
 
 def utc_now() -> datetime:

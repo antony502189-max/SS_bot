@@ -30,8 +30,10 @@ class Role(enum.StrEnum):
 
 class UserStatus(enum.StrEnum):
     PENDING_PROFILE = "pending_profile"
+    NEEDS_USERNAME = "needs_username"
     ACTIVE = "active"
     INACTIVE = "inactive"
+    BLOCKED = "blocked"
 
 
 class TaskKind(enum.StrEnum):
@@ -90,6 +92,7 @@ class Sector(UUIDTimestampMixin, Base):
     __tablename__ = "sectors"
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Event(UUIDTimestampMixin, Base):

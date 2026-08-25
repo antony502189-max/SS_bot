@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
+    app_session_secret: str = ""
+    session_ttl_minutes: int = Field(default=480, ge=5, le=1440)
     telegram_bot_token: str = ""
     telegram_bot_username: str = ""
     telegram_webhook_secret: str = ""
