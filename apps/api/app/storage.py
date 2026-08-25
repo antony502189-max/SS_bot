@@ -52,3 +52,18 @@ def object_exists(object_key: str) -> bool:
         return False
     client.head_object(Bucket=get_settings().s3_bucket, Key=object_key)
     return True
+
+
+def get_object_bytes(object_key: str) -> bytes:
+    client = _client()
+    if client is None:
+        raise RuntimeError("Object storage is not configured")
+    response = client.get_object(Bucket=get_settings().s3_bucket, Key=object_key)
+    return response["Body"].read()
+
+
+def delete_object(object_key: str) -> None:
+    client = _client()
+    if client is None:
+        raise RuntimeError("Object storage is not configured")
+    client.delete_object(Bucket=get_settings().s3_bucket, Key=object_key)

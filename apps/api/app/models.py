@@ -107,6 +107,16 @@ class Event(UUIDTimestampMixin, Base):
     budget: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     sector_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sectors.id"), nullable=True)
     created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    retention_delete_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    retention_extended_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retention_warning_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EventParticipant(UUIDTimestampMixin, Base):

@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import get_settings
 from .models import (
     AuditLog,
     Event,
@@ -38,6 +39,31 @@ def utc_now() -> datetime:
 def task_cleanup_at(completed_at: datetime, deadline: datetime) -> datetime:
     """Three days after closure, never before the task deadline."""
     return max(completed_at + timedelta(days=3), deadline)
+
+
+async def refresh_event_retention(session: AsyncSession, event_id: uuid.UUID | None) -> None:
+    """Retain event business records for one year after the latest closed task."""
+    if not event_id:
+        return
+    event = await session.get(Event, event_id)
+    if not event:
+        return
+    closed_at = [
+        timestamp
+        for completed_at, cancelled_at in (
+            await session.execute(
+                select(Task.completed_at, Task.cancelled_at).where(Task.event_id == event_id)
+            )
+        ).all()
+        for timestamp in (completed_at, cancelled_at)
+        if timestamp is not None
+    ]
+    if not closed_at:
+        return
+    event.retention_delete_at = max(closed_at) + timedelta(
+        days=get_settings().archive_retention_days
+    )
+    event.retention_warning_sent_at = None
 
 
 async def audit(

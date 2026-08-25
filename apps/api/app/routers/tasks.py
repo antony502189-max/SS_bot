@@ -40,6 +40,7 @@ from ..services import (
     ensure_sector_access,
     is_task_member,
     queue_task_notifications,
+    refresh_event_retention,
     require_active_user,
     require_role,
     task_cleanup_at,
@@ -462,6 +463,7 @@ async def cancel_task(
     task.status = TaskStatus.CANCELLED
     task.cancelled_at = datetime.now(UTC)
     task.cleanup_at = task_cleanup_at(task.cancelled_at, task.deadline)
+    await refresh_event_retention(session, task.event_id)
     members = {
         member.user_id
         for member in (

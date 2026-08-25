@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     app_session_secret: str = ""
     session_ttl_minutes: int = Field(default=480, ge=5, le=1440)
     task_deadline_reminder_hours: int = Field(default=24, ge=1, le=168)
+    archive_retention_days: int = Field(default=365, ge=1, le=3650)
+    archive_delete_warning_days: int = Field(default=30, ge=1, le=365)
     telegram_bot_token: str = ""
     telegram_bot_username: str = ""
     telegram_webhook_secret: str = ""

@@ -79,6 +79,10 @@ class EventOut(BaseModel):
     ends_at: datetime | None
     budget: float | None
     sector_id: uuid.UUID | None
+    retention_delete_at: datetime | None
+    retention_extended_until: datetime | None
+    retention_warning_sent_at: datetime | None
+    purged_at: datetime | None
     model_config = {"from_attributes": True}
 
 
@@ -93,6 +97,35 @@ class EventUpdate(BaseModel):
 
 class EventParticipantCreate(BaseModel):
     user_id: uuid.UUID
+
+
+class RetentionExtend(BaseModel):
+    until: datetime
+
+
+class ArchiveReportOut(BaseModel):
+    submitted_by_id: uuid.UUID
+    comment: str | None
+    approval_comment: str | None
+    submitted_at: datetime
+    approved_at: datetime | None
+    photo_count: int
+
+
+class ArchiveTaskOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    status: TaskStatus
+    deadline: datetime
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    report: ArchiveReportOut | None
+
+
+class EventArchiveOut(BaseModel):
+    event: EventOut
+    participants: list[UserOut]
+    tasks: list[ArchiveTaskOut]
 
 
 class TaskCreate(BaseModel):

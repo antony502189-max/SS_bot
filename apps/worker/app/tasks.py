@@ -10,18 +10,24 @@ from apps.api.app.config import get_settings
 from apps.api.app.db import SessionLocal
 from apps.api.app.models import (
     ChatStatus,
+    Event,
     MembershipState,
     Notification,
     OutboxEvent,
+    Role,
     Task,
     TaskChat,
     TaskChatMember,
     TaskKind,
     TaskMember,
+    TaskPhoto,
+    TaskReport,
     TaskStatus,
     User,
+    UserStatus,
 )
 from apps.api.app.services import queue_task_notifications
+from apps.api.app.storage import delete_object
 from apps.telegram_user_service.app.client import TelegramResultKind, TelegramUserService
 
 settings = get_settings()
@@ -44,6 +50,10 @@ celery_app.conf.beat_schedule = {
     "reconcile-task-chat-members-every-ten-minutes": {
         "task": "apps.worker.app.tasks.reconcile_task_chat_members",
         "schedule": 600.0,
+    },
+    "process-archive-retention-daily": {
+        "task": "apps.worker.app.tasks.process_archive_retention",
+        "schedule": 86400.0,
     },
 }
 
@@ -74,6 +84,8 @@ def notification_text(notification: Notification) -> str:
         return f"Report submitted for: {title}"
     if notification.type == "TASK_COMPLETED":
         return f"Task completed: {title}"
+    if notification.type == "ARCHIVE_DELETION_30D":
+        return f"Archive retention warning: {title} will be deleted in 30 days."
     return f"SS Bot notification: {title}"
 
 
@@ -462,6 +474,96 @@ async def _reconcile_task_chat_members() -> None:
 @celery_app.task(name="apps.worker.app.tasks.reconcile_task_chat_members")
 def reconcile_task_chat_members() -> None:
     asyncio.run(_reconcile_task_chat_members())
+
+
+def event_retention_limit(event: Event) -> datetime | None:
+    return max(
+        (value for value in [event.retention_delete_at, event.retention_extended_until] if value),
+        default=None,
+    )
+
+
+async def _process_archive_retention() -> None:
+    now = datetime.now(UTC)
+    warning_cutoff = now + timedelta(days=settings.archive_delete_warning_days)
+    async with SessionLocal() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(Event)
+                    .where(
+                        Event.retention_delete_at.is_not(None),
+                        Event.purged_at.is_(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        for event in events:
+            deadline = event_retention_limit(event)
+            if not deadline:
+                continue
+            if deadline <= warning_cutoff and not event.retention_warning_sent_at:
+                recipients = list(
+                    (
+                        await session.scalars(
+                            select(User).where(
+                                User.status == UserStatus.ACTIVE,
+                                (User.role == Role.ADMIN)
+                                | (
+                                    (User.role == Role.SECTOR_HEAD)
+                                    & (User.sector_id == event.sector_id)
+                                ),
+                            )
+                        )
+                    ).all()
+                )
+                for user in recipients:
+                    session.add(
+                        Notification(
+                            user_id=user.id,
+                            event_id=event.id,
+                            type="ARCHIVE_DELETION_30D",
+                            payload={"title": event.title},
+                        )
+                    )
+                event.retention_warning_sent_at = now
+            if deadline > now:
+                continue
+            photos = list(
+                (
+                    await session.scalars(
+                        select(TaskPhoto)
+                        .join(TaskReport, TaskPhoto.report_id == TaskReport.id)
+                        .join(Task, TaskReport.task_id == Task.id)
+                        .where(Task.event_id == event.id)
+                    )
+                ).all()
+            )
+            try:
+                for photo in photos:
+                    delete_object(photo.object_key)
+            except Exception:
+                # Do not mark the archive purged until every object deletion succeeded.
+                event.retention_warning_sent_at = now
+                continue
+            reports = list(
+                (
+                    await session.scalars(
+                        select(TaskReport).join(Task).where(Task.event_id == event.id)
+                    )
+                ).all()
+            )
+            for report in reports:
+                report.comment = None
+                report.approval_comment = None
+            event.purged_at = now
+        await session.commit()
+
+
+@celery_app.task(name="apps.worker.app.tasks.process_archive_retention")
+def process_archive_retention() -> None:
+    asyncio.run(_process_archive_retention())
 
 
 async def _process_cleanup() -> None:

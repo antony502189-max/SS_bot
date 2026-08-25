@@ -7,9 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..dependencies import current_user
-from ..models import OutboxEvent, Task, TaskPhoto, TaskReport, TaskStatus, User
+from ..models import OutboxEvent, Task, TaskMember, TaskPhoto, TaskReport, TaskStatus, User
 from ..schemas import ReportCreate, ReportDecision, UploadRequest, UploadTarget
-from ..services import audit, is_task_member, task_cleanup_at
+from ..services import (
+    audit,
+    is_task_member,
+    queue_task_notifications,
+    refresh_event_retention,
+    task_cleanup_at,
+)
 from ..storage import create_presigned_upload, object_exists
 
 router = APIRouter(prefix="/tasks/{task_id}", tags=["reports"])
@@ -35,6 +41,7 @@ async def submit_report(
     if task.status == TaskStatus.COMPLETED:
         task.completed_at = datetime.now(UTC)
         task.cleanup_at = task_cleanup_at(task.completed_at, task.deadline)
+        await refresh_event_retention(session, task.event_id)
         session.add(
             OutboxEvent(
                 event_type="TASK_COMPLETED",
@@ -44,6 +51,15 @@ async def submit_report(
             )
         )
     session.add(report)
+    recipients = {
+        member.user_id
+        for member in (
+            await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
+        ).all()
+    }
+    await queue_task_notifications(session, task, recipients, "TASK_SUBMITTED")
+    if task.status == TaskStatus.COMPLETED:
+        await queue_task_notifications(session, task, recipients, "TASK_COMPLETED")
     await audit(session, actor.id, "task.report_submitted", "task", task.id)
     await session.commit()
     return {"report_id": str(report.id), "status": task.status.value}
@@ -130,6 +146,7 @@ async def decide_report(
         task.completed_at = datetime.now(UTC)
         task.cleanup_at = task_cleanup_at(task.completed_at, task.deadline)
         report.approved_at = task.completed_at
+        await refresh_event_retention(session, task.event_id)
         session.add(
             OutboxEvent(
                 event_type="TASK_COMPLETED",
@@ -140,6 +157,15 @@ async def decide_report(
         )
     else:
         task.status = TaskStatus.RETURNED
+    recipients = {
+        member.user_id
+        for member in (
+            await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
+        ).all()
+    }
+    await queue_task_notifications(
+        session, task, recipients, "TASK_COMPLETED" if body.approved else "TASK_UPDATED"
+    )
     await audit(
         session,
         actor.id,

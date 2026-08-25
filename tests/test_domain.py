@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,11 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from telethon import errors
 
+from apps.api.app.archive import build_event_archive_pdf
 from apps.api.app.models import (
     Base,
+    Event,
     Notification,
     Role,
     Sector,
+    Task,
     TaskChat,
     TaskKind,
     TaskMember,
@@ -19,7 +23,13 @@ from apps.api.app.models import (
 )
 from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
-from apps.api.app.services import create_event, create_task, normalize_full_name, task_cleanup_at
+from apps.api.app.services import (
+    create_event,
+    create_task,
+    normalize_full_name,
+    refresh_event_retention,
+    task_cleanup_at,
+)
 from apps.telegram_user_service.app.client import TelegramResultKind, classify_error
 
 
@@ -58,6 +68,30 @@ def test_mtproto_membership_errors_have_actionable_states() -> None:
         classify_error(errors.UserNotParticipantError(None)).kind
         == TelegramResultKind.NOT_JOINED
     )
+
+
+def test_event_archive_pdf_contains_event_and_task_text() -> None:
+    event = Event(
+        id=uuid.uuid4(),
+        title="Community day",
+        starts_at=datetime(2026, 8, 25, tzinfo=UTC),
+        created_by_id=uuid.uuid4(),
+    )
+    participant = User(telegram_id=9, full_name="Ada Lovelace")
+    payload = build_event_archive_pdf(
+        event,
+        [participant],
+        [
+            {
+                "title": "Set chairs",
+                "status": "completed",
+                "deadline": datetime(2026, 8, 26, tzinfo=UTC),
+                "report": {"comment": "Done", "photo_count": 1},
+            }
+        ],
+    )
+    assert payload.startswith(b"%PDF")
+    assert len(payload) > 1000
 
 
 @pytest.mark.asyncio
@@ -191,3 +225,35 @@ async def test_sector_head_cannot_add_another_sector_participant_to_event(sessio
                 participant_ids=[outsider.id],
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_closed_event_task_sets_one_year_retention(session) -> None:
+    creator = User(
+        telegram_id=30,
+        full_name="Admin User",
+        normalized_full_name="admin user",
+        status=UserStatus.ACTIVE,
+        role=Role.ADMIN,
+    )
+    session.add(creator)
+    await session.flush()
+    event = Event(
+        title="Event",
+        starts_at=datetime.now(UTC),
+        created_by_id=creator.id,
+    )
+    session.add(event)
+    await session.flush()
+    task = Task(
+        event_id=event.id,
+        title="Closed task",
+        deadline=datetime.now(UTC),
+        creator_id=creator.id,
+        idempotency_key="retention-task",
+        completed_at=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+    session.add_all([event, task])
+    await session.flush()
+    await refresh_event_retention(session, event.id)
+    assert event.retention_delete_at.date() == datetime(2027, 8, 25, tzinfo=UTC).date()
