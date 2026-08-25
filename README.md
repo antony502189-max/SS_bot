@@ -21,7 +21,7 @@ Never put a bot token, Telethon session, database password, or S3 secret in Git.
 2. Copy the example: `Copy-Item .env.example .env`.
 3. Set a fresh `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, and `BOOTSTRAP_ADMIN_TELEGRAM_IDS` in `.env`. For the group automation, also configure the dedicated MTProto account variables.
 4. Start the stack: `docker compose up --build`.
-5. The API is at `http://localhost:8000`, its health check is `http://localhost:8000/healthz`, and the packaged Mini App is at `http://localhost:8080`.
+5. The API is at `http://localhost:8000`; `/healthz` reports process health and `/readyz` verifies database access. The packaged Mini App is at `http://localhost:8080`.
 
 For a local API-only iteration, install the project and run:
 
@@ -53,3 +53,5 @@ Set-Location apps/miniapp; npm install; npm run build
 ## Production notes
 
 Terminate TLS at a reverse proxy, move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
+
+JSON logs include `request_id`, method, path, status, and duration. Forward container logs to your observability platform, alert on `/readyz` failures, and test database restore plus object-storage restore on a regular schedule.

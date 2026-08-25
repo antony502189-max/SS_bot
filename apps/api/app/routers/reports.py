@@ -36,7 +36,7 @@ async def submit_report(
     body: ReportCreate,
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
-) -> TaskPhoto:
+) -> dict:
     if not await is_task_member(session, task_id, actor.id):
         raise HTTPException(status_code=403, detail="Task membership required")
     task = await session.get(Task, task_id)
@@ -103,7 +103,7 @@ async def confirm_photo_upload(
     body: PhotoComplete,
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> TaskPhoto:
     if not await is_task_member(session, task_id, actor.id):
         raise HTTPException(status_code=403, detail="Task membership required")
     report = await session.scalar(select(TaskReport).where(TaskReport.task_id == task_id))

@@ -3,11 +3,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from telethon import errors
 
 from apps.api.app.archive import build_event_archive_pdf
+from apps.api.app.main import app
 from apps.api.app.models import (
     Base,
     Event,
@@ -52,6 +54,13 @@ def test_full_name_normalization() -> None:
 def test_signed_session_round_trip() -> None:
     token = issue_access_token("08a093e2-5b38-44be-9e6e-ae4e935c39fc", "test-secret", 5)
     assert verify_access_token(token, "test-secret") == "08a093e2-5b38-44be-9e6e-ae4e935c39fc"
+
+
+def test_readiness_has_request_trace_id() -> None:
+    client = TestClient(app)
+    response = client.get("/readyz")
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"]
 
 
 def test_cleanup_is_not_before_deadline() -> None:
