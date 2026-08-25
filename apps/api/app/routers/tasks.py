@@ -28,6 +28,7 @@ from ..services import (
     queue_task_notifications,
     require_active_user,
     require_role,
+    task_cleanup_at,
     task_query_for_user,
 )
 
@@ -292,7 +293,7 @@ async def cancel_task(
         raise HTTPException(status_code=422, detail="Task is already closed")
     task.status = TaskStatus.CANCELLED
     task.cancelled_at = datetime.now(UTC)
-    task.cleanup_at = task.cancelled_at
+    task.cleanup_at = task_cleanup_at(task.cancelled_at, task.deadline)
     members = {
         member.user_id
         for member in (
@@ -316,6 +317,11 @@ async def update_checklist(
 ) -> dict:
     if not await is_task_member(session, task_id, actor.id):
         raise HTTPException(status_code=403, detail="Task membership required")
+    task = await session.get(Task, task_id)
+    if not task or task.status not in {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}:
+        raise HTTPException(
+            status_code=422, detail="Checklist can be updated only for an open task"
+        )
     item = await session.get(TaskChecklistItem, item_id)
     if not item or item.task_id != task_id:
         raise HTTPException(status_code=404, detail="Checklist item not found")

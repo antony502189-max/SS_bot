@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_session_secret: str = ""
     session_ttl_minutes: int = Field(default=480, ge=5, le=1440)
+    task_deadline_reminder_hours: int = Field(default=24, ge=1, le=168)
     telegram_bot_token: str = ""
     telegram_bot_username: str = ""
     telegram_webhook_secret: str = ""

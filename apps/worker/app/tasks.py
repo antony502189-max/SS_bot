@@ -11,14 +11,17 @@ from apps.api.app.db import SessionLocal
 from apps.api.app.models import (
     ChatStatus,
     MembershipState,
+    Notification,
     OutboxEvent,
     Task,
     TaskChat,
     TaskChatMember,
     TaskKind,
     TaskMember,
+    TaskStatus,
     User,
 )
+from apps.api.app.services import queue_task_notifications
 from apps.telegram_user_service.app.client import TelegramResultKind, TelegramUserService
 
 settings = get_settings()
@@ -30,6 +33,14 @@ celery_app.conf.beat_schedule = {
         "schedule": 60.0,
     },
     "cleanup-every-hour": {"task": "apps.worker.app.tasks.process_cleanup", "schedule": 3600.0},
+    "notifications-every-minute": {
+        "task": "apps.worker.app.tasks.send_due_notifications",
+        "schedule": 60.0,
+    },
+    "task-deadlines-every-five-minutes": {
+        "task": "apps.worker.app.tasks.process_task_deadlines",
+        "schedule": 300.0,
+    },
 }
 
 
@@ -41,6 +52,122 @@ async def notify(telegram_id: int, text: str) -> None:
         await bot.send_message(telegram_id, text)
     finally:
         await bot.session.close()
+
+
+def notification_text(notification: Notification) -> str:
+    title = str(notification.payload.get("title", "task"))
+    if notification.type == "TASK_ASSIGNED":
+        return f"You were assigned to: {title}"
+    if notification.type == "TASK_UPDATED":
+        return f"Task updated: {title}"
+    if notification.type == "TASK_DEADLINE_24H":
+        return f"Deadline reminder: {title} is due within 24 hours."
+    if notification.type == "TASK_OVERDUE":
+        return f"Overdue task: {title} has passed its deadline."
+    if notification.type == "TASK_CANCELLED":
+        return f"Task cancelled: {title}"
+    if notification.type == "TASK_SUBMITTED":
+        return f"Report submitted for: {title}"
+    if notification.type == "TASK_COMPLETED":
+        return f"Task completed: {title}"
+    return f"SS Bot notification: {title}"
+
+
+async def _send_due_notifications() -> None:
+    if not settings.telegram_bot_token:
+        return
+    now = datetime.now(UTC)
+    async with SessionLocal() as session:
+        due = list(
+            (
+                await session.scalars(
+                    select(Notification)
+                    .where(Notification.status == "pending", Notification.scheduled_at <= now)
+                    .with_for_update(skip_locked=True)
+                    .limit(100)
+                )
+            ).all()
+        )
+        for notification in due:
+            notification.attempts += 1
+            user = await session.get(User, notification.user_id)
+            try:
+                if not user:
+                    notification.status = "cancelled"
+                    notification.last_error = "user_not_found"
+                    continue
+                await notify(user.telegram_id, notification_text(notification))
+                notification.status = "sent"
+                notification.sent_at = now
+                notification.last_error = None
+            except Exception as exc:
+                notification.last_error = type(exc).__name__
+                notification.next_attempt_at = now + timedelta(
+                    minutes=min(30, 2**notification.attempts)
+                )
+                notification.scheduled_at = notification.next_attempt_at
+                if notification.attempts >= 5:
+                    notification.status = "failed"
+                    notification.failed_at = now
+        await session.commit()
+
+
+@celery_app.task(name="apps.worker.app.tasks.send_due_notifications")
+def send_due_notifications() -> None:
+    asyncio.run(_send_due_notifications())
+
+
+async def _process_task_deadlines() -> None:
+    now = datetime.now(UTC)
+    reminder_cutoff = now + timedelta(hours=settings.task_deadline_reminder_hours)
+    async with SessionLocal() as session:
+        overdue = list(
+            (
+                await session.scalars(
+                    select(Task)
+                    .where(Task.status == TaskStatus.ACTIVE, Task.deadline < now)
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        for task in overdue:
+            task.status = TaskStatus.OVERDUE
+            await queue_task_notifications(session, task, {task.creator_id}, "TASK_OVERDUE")
+        due_soon = list(
+            (
+                await session.scalars(
+                    select(Task)
+                    .where(
+                        Task.status == TaskStatus.ACTIVE,
+                        Task.deadline >= now,
+                        Task.deadline <= reminder_cutoff,
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        for task in due_soon:
+            already_queued = await session.scalar(
+                select(Notification.id).where(
+                    Notification.task_id == task.id,
+                    Notification.type == "TASK_DEADLINE_24H",
+                )
+            )
+            if already_queued:
+                continue
+            members = {
+                member.user_id
+                for member in (
+                    await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
+                ).all()
+            }
+            await queue_task_notifications(session, task, members, "TASK_DEADLINE_24H")
+        await session.commit()
+
+
+@celery_app.task(name="apps.worker.app.tasks.process_task_deadlines")
+def process_task_deadlines() -> None:
+    asyncio.run(_process_task_deadlines())
 
 
 async def provision_task_chat(task_id: str) -> None:
