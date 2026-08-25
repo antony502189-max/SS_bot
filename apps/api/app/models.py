@@ -66,6 +66,7 @@ class MembershipState(enum.StrEnum):
     INVITED = "invited"
     JOINED = "joined"
     NOT_JOINED = "not_joined"
+    REMOVED = "removed"
     FAILED = "failed"
 
 
@@ -195,6 +196,7 @@ class TaskChat(UUIDTimestampMixin, Base):
         ForeignKey("tasks.id", ondelete="CASCADE"), unique=True
     )
     telegram_chat_id: Mapped[int | None] = mapped_column(unique=True, nullable=True)
+    pinned_message_id: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[ChatStatus] = mapped_column(default=ChatStatus.PENDING)
     cleanup_warned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

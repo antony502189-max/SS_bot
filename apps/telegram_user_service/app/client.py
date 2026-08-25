@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from telethon import TelegramClient, errors, functions
-from telethon.tl.types import ChatAdminRights
+from telethon.tl.types import ChatAdminRights, ChatBannedRights
 
 from apps.api.app.config import get_settings
 
@@ -132,6 +133,40 @@ class TelegramUserService:
             )
             return TelegramResult(TelegramResultKind.SUCCESS, value=True)
         except Exception as exc:
+            return classify_error(exc)
+
+    async def post_and_pin_task_brief(
+        self, chat_id: int, title: str, description: str | None, deadline: datetime
+    ) -> TelegramResult:
+        try:
+            channel = await self.client.get_input_entity(chat_id)
+            message = await self.client.send_message(
+                channel,
+                f"Task: {title}\nDeadline: {deadline.astimezone(UTC).isoformat()}\n\n"
+                f"{description or 'No description provided.'}",
+            )
+            await self.client.pin_message(channel, message, notify=False)
+            return TelegramResult(TelegramResultKind.SUCCESS, value=message.id)
+        except Exception as exc:
+            return classify_error(exc)
+
+    async def remove_user(self, chat_id: int, username: str | None) -> TelegramResult:
+        if not username:
+            return TelegramResult(TelegramResultKind.USERNAME_NOT_FOUND)
+        try:
+            channel = await self.client.get_input_entity(chat_id)
+            user = await self.client.get_input_entity(f"@{username.lstrip('@')}")
+            await self.client(
+                functions.channels.EditBannedRequest(
+                    channel=channel,
+                    participant=user,
+                    banned_rights=ChatBannedRights(until_date=None, view_messages=True),
+                )
+            )
+            return TelegramResult(TelegramResultKind.SUCCESS)
+        except Exception as exc:
+            if isinstance(exc, errors.UserNotParticipantError):
+                return TelegramResult(TelegramResultKind.SUCCESS)
             return classify_error(exc)
 
     async def create_single_use_invite(self, chat_id: int, title: str) -> TelegramResult:

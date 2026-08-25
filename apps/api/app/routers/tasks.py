@@ -394,6 +394,16 @@ async def remove_task_member(
         raise HTTPException(status_code=404, detail="Task member not found")
     if member.is_creator or member.is_leader:
         raise HTTPException(status_code=422, detail="Creator or leader cannot be removed")
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if chat and chat.telegram_chat_id:
+        session.add(
+            OutboxEvent(
+                event_type="TASK_CHAT_MEMBER_REMOVAL_REQUESTED",
+                aggregate_type="task_chat",
+                aggregate_id=str(chat.id),
+                payload={"task_id": str(task.id), "user_id": str(user_id)},
+            )
+        )
     await session.delete(member)
     await audit(
         session, actor.id, "task.member_removed", "task", task.id, {"user_id": str(user_id)}

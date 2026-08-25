@@ -28,7 +28,11 @@ from apps.api.app.models import (
 )
 from apps.api.app.services import queue_task_notifications, refresh_event_retention
 from apps.api.app.storage import delete_object, object_exists
-from apps.telegram_user_service.app.client import TelegramResultKind, TelegramUserService
+from apps.telegram_user_service.app.client import (
+    TelegramResult,
+    TelegramResultKind,
+    TelegramUserService,
+)
 
 settings = get_settings()
 celery_app = Celery("ss_bot", broker=settings.redis_url, backend=settings.redis_url)
@@ -223,6 +227,12 @@ async def provision_task_chat(task_id: str) -> None:
                     chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
                     await session.commit()
                     return
+                brief = await ensure_task_brief(telegram, task, chat)
+                if brief.kind != TelegramResultKind.SUCCESS:
+                    chat.status = ChatStatus.DEGRADED
+                    chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
+                    await session.commit()
+                    return
                 members = list(
                     (
                         await session.scalars(
@@ -316,6 +326,10 @@ async def _process_outbox() -> None:
                     )
                 elif event.event_type == "TASK_CHAT_RECOVERY_REQUESTED":
                     await _recover_task_chat(event.payload["task_id"])
+                elif event.event_type == "TASK_CHAT_MEMBER_REMOVAL_REQUESTED":
+                    await _remove_task_chat_member(
+                        event.payload["task_id"], event.payload["user_id"]
+                    )
                 event.processed_at = datetime.now(UTC)
                 event.last_error = None
             except Exception as exc:
@@ -365,6 +379,12 @@ async def _recover_task_chat(task_id: str) -> None:
                     chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
                     await session.commit()
                     return
+                brief = await ensure_task_brief(telegram, task, chat)
+                if brief.kind != TelegramResultKind.SUCCESS:
+                    chat.status = ChatStatus.DEGRADED
+                    chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
+                    await session.commit()
+                    return
                 members = list(
                     (
                         await session.scalars(
@@ -389,6 +409,46 @@ async def _recover_task_chat(task_id: str) -> None:
             raise
         finally:
             await session.commit()
+
+
+async def ensure_task_brief(
+    telegram: TelegramUserService, task: Task, chat: TaskChat
+):
+    if chat.pinned_message_id:
+        return TelegramResult(TelegramResultKind.SUCCESS)
+    result = await telegram.post_and_pin_task_brief(
+        chat.telegram_chat_id, task.title, task.description, task.deadline
+    )
+    if result.kind == TelegramResultKind.SUCCESS:
+        chat.pinned_message_id = int(result.value)
+    return result
+
+
+async def _remove_task_chat_member(task_id: str, user_id: str) -> None:
+    async with SessionLocal() as session:
+        task = await session.get(Task, uuid.UUID(task_id))
+        if not task:
+            return
+        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+        member = await session.scalar(
+            select(TaskChatMember).where(
+                TaskChatMember.task_chat_id == chat.id,
+                TaskChatMember.user_id == uuid.UUID(user_id),
+            )
+        ) if chat else None
+        user = await session.get(User, uuid.UUID(user_id))
+        if not chat or not chat.telegram_chat_id or not member or not user:
+            return
+        async with TelegramUserService() as telegram:
+            result = await telegram.remove_user(chat.telegram_chat_id, user.telegram_username)
+        if result.kind == TelegramResultKind.SUCCESS:
+            member.state = MembershipState.REMOVED
+            member.next_reminder_at = None
+            member.last_error = None
+        else:
+            member.last_error = result.error or result.kind.value
+            raise RuntimeError(member.last_error)
+        await session.commit()
 
 
 async def _send_invite_reminders() -> None:
