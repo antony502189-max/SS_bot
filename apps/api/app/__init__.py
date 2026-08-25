@@ -1,0 +1,1 @@
+"""SS Bot API application."""

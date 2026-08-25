@@ -1,0 +1,117 @@
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, Field, field_validator
+
+from .models import Role, TaskKind, TaskStatus
+
+
+class TelegramIdentity(BaseModel):
+    telegram_id: int
+    username: str | None = Field(default=None, max_length=64)
+
+
+class CompleteProfile(BaseModel):
+    full_name: str = Field(min_length=2, max_length=200)
+
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    telegram_id: int
+    telegram_username: str | None
+    full_name: str | None
+    role: Role
+    status: str
+    sector_id: uuid.UUID | None
+
+    model_config = {"from_attributes": True}
+
+
+class SectorCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class SectorOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    model_config = {"from_attributes": True}
+
+
+class EventCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    starts_at: datetime
+    ends_at: datetime | None = None
+    budget: float | None = Field(default=None, ge=0)
+    sector_id: uuid.UUID | None = None
+    participant_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class EventOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    description: str | None
+    starts_at: datetime
+    ends_at: datetime | None
+    budget: float | None
+    sector_id: uuid.UUID | None
+    model_config = {"from_attributes": True}
+
+
+class TaskCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    kind: TaskKind = TaskKind.INDIVIDUAL
+    deadline: datetime
+    event_id: uuid.UUID | None = None
+    sector_id: uuid.UUID | None = None
+    leader_id: uuid.UUID | None = None
+    member_ids: list[uuid.UUID] = Field(default_factory=list)
+    checklist: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("checklist")
+    @classmethod
+    def checklist_items_are_not_empty(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("Checklist items cannot be empty")
+        return value
+
+
+class TaskOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    description: str | None
+    kind: TaskKind
+    status: TaskStatus
+    deadline: datetime
+    creator_id: uuid.UUID
+    leader_id: uuid.UUID | None
+    cleanup_at: datetime | None
+    model_config = {"from_attributes": True}
+
+
+class ChecklistUpdate(BaseModel):
+    is_completed: bool
+
+
+class ReportCreate(BaseModel):
+    comment: str | None = Field(default=None, max_length=5000)
+
+
+class ReportDecision(BaseModel):
+    approved: bool
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class UploadRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=180)
+    content_type: str
+    size_bytes: int = Field(gt=0, le=10 * 1024 * 1024)
+
+
+class UploadTarget(BaseModel):
+    object_key: str
+    upload_url: str
+    fields: dict[str, str] = Field(default_factory=dict)

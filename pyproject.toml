@@ -1,0 +1,44 @@
+[project]
+name = "ss-bot"
+version = "0.1.0"
+description = "Telegram task and event management system"
+requires-python = ">=3.12"
+dependencies = [
+  "aiogram>=3.22,<4",
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "boto3>=1.39,<2",
+  "celery[redis]>=5.5,<6",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy[asyncio]>=2.0.43,<3",
+  "telethon>=1.41,<2",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "aiosqlite>=0.21,<1",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["apps*"]
+exclude = ["migrations*", "tests*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
