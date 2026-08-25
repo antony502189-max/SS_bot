@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -80,7 +81,7 @@ class UUIDTimestampMixin:
 
 class User(UUIDTimestampMixin, Base):
     __tablename__ = "users"
-    telegram_id: Mapped[int] = mapped_column(unique=True, index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     normalized_full_name: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
@@ -195,7 +196,7 @@ class TaskChat(UUIDTimestampMixin, Base):
     task_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tasks.id", ondelete="CASCADE"), unique=True
     )
-    telegram_chat_id: Mapped[int | None] = mapped_column(unique=True, nullable=True)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     pinned_message_id: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[ChatStatus] = mapped_column(default=ChatStatus.PENDING)
     cleanup_warned_at: Mapped[datetime | None] = mapped_column(
