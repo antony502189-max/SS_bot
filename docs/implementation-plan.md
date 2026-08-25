@@ -2,31 +2,30 @@
 
 Updated: 2026-08-25
 
-This is a greenfield implementation built from the target architecture. The first two commits establish the project; they do **not** complete the architecture.
+This is a greenfield implementation built from the target architecture. The repository now contains the end-to-end implementation; the remaining work is environment-specific integration proof and operational rollout.
 
 ## Coverage audit
 
 | Phase | Status | Evidence / next work |
 | --- | --- | --- |
-| 0 Foundation | Partial | Docker, API, bot, worker, Mini App, Alembic, CI exist. Add production reverse proxy/observability later. |
-| 1 Registration | Partial | `/start`, profile capture, and init-data HMAC exist. Add username readiness, session authorization, audit, and full `/me` flows now. |
-| 2 Roles/sectors | In progress | Replace caller-supplied actor IDs with authenticated identity. Complete role, sector, activation/deactivation, and audit endpoints. |
-| 3 Search | Partial | Normalization/search exists but lacks result sector shape, PostgreSQL trigram GIN index, and duplicate-name coverage. |
-| 4 Events | Partial | Creation/listing exists. Add retrieval, edits, participant lifecycle, sector guards, archive metadata. |
-| 5 Tasks | Partial | Creation, membership invariant, checklist, basic report transitions exist. Add task changes, cancellation, notifications, strict state machine. |
-| 6–10 Outbox/chat/invites/reminders | In progress | Durable outbox, state API, targeted re-invites, admin promotion, reminders, and ten-minute membership reconciliation exist. Add pinned task messages, chat-member removal, and adapter mocks. |
-| 11–14 Execution/notifications/cleanup | In progress | Presign/report/approval, report notifications, overdue/deadline jobs, cleanup lifecycle, server-side image inspection, preview generation, and archive verification before Telegram deletion exist. Add storage integration tests. |
-| 15–16 Archive/retention | In progress | Event archive API, PDF/ZIP downloads, one-year scheduling, 30-day alerts, extensions, and soft purge exist. Add generated-export persistence and storage integration tests. |
-| 17 Hardening | Not started | Webhooks, reverse proxy, structured logging, metrics, backups/runbooks, production CI/CD. |
+| 0 Foundation | Implemented | Docker, API, bot, worker, Mini App, Alembic, CI, production Caddy edge configuration, readiness checks, and structured request logs exist. |
+| 1 Registration | Implemented | `/start`, profile capture, username readiness, Telegram init-data HMAC, signed sessions, authenticated `/me`, and audit records exist. |
+| 2 Roles/sectors | Implemented | Authenticated role/sector guards, user activation/deactivation, and administrator user management endpoints exist; administrators can manage people from the Mini App. |
+| 3 Search | Implemented | Normalized person search and PostgreSQL trigram index migration are included. |
+| 4 Events | Implemented | Event and participant lifecycle, sector guards, archive metadata, exports, and retention controls exist. |
+| 5 Tasks | Implemented | Task creation/change/cancellation, member invariants, checklist, reports, and strict lifecycle transitions exist. |
+| 6–10 Outbox/chat/invites/reminders | Implemented | Durable outbox, targeted re-invites, bot admin promotion, pinned task briefs, member removal, reminders, and ten-minute membership reconciliation exist. |
+| 11–14 Execution/notifications/cleanup | Implemented | Presigned reports, server-side image inspection and previews, durable notifications, overdue/deadline jobs, cleanup lifecycle, and archive verification before Telegram deletion exist. |
+| 15–16 Archive/retention | Implemented | Event archive API, PDF/ZIP exports, one-year scheduling, 30-day alerts, extensions, and soft purge exist. |
+| 17 Hardening | Implemented in code | Webhook mode, reverse proxy, JSON request logs, health/readiness endpoints, CI, and deployment runbook are included. Metrics, backups, credential rotation, and live-alert integrations remain deployment operations. |
 
 ## Current implementation order
 
-1. Secure Phase 1–3 flows and finish role/sector/search administration.
-2. Complete events/tasks, notifications, and state transitions.
-3. Make MTProto/chat automation durable and testable without real credentials.
-4. Add archive/export/retention workers.
-5. Complete the Mini App workflows and production hardening.
+1. Provision production PostgreSQL, Redis, S3-compatible storage, HTTPS domain, and an organization-owned MTProto account.
+2. Rotate the exposed BotFather token, configure the replacement token, and run the webhook smoke test.
+3. Run the real Telegram, storage, and retention staging test matrix before launch.
+4. Configure infrastructure backup, metrics, alerting, and credential-rotation ownership.
 
 ## External blockers
 
-No external credential is needed for implementation or mocked verification. A new BotFather token, HTTPS host, S3 deployment credentials, and an organization-owned authorized MTProto account are required only for live integration testing and deployment.
+No external credential is needed for implementation or mocked verification. A new BotFather token, HTTPS host, S3 deployment credentials, and an organization-owned authorized MTProto account are required for live integration testing and deployment. The originally shared bot token must be treated as compromised and rotated before use.

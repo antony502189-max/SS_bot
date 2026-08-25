@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from telethon import errors
+from telethon import errors, functions
 
 from apps.api.app.archive import build_event_archive_pdf
 from apps.api.app.main import app
@@ -35,7 +36,31 @@ from apps.api.app.services import (
     refresh_event_retention,
     task_cleanup_at,
 )
-from apps.telegram_user_service.app.client import TelegramResultKind, classify_error
+from apps.telegram_user_service.app.client import (
+    TelegramResultKind,
+    TelegramUserService,
+    classify_error,
+)
+
+
+class FakeTelegramClient:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+        self.pinned: tuple[object, object, bool] | None = None
+        self.sent: tuple[object, str] | None = None
+
+    async def get_input_entity(self, value: object) -> str:
+        return f"entity:{value}"
+
+    async def send_message(self, channel: object, text: str) -> SimpleNamespace:
+        self.sent = (channel, text)
+        return SimpleNamespace(id=42)
+
+    async def pin_message(self, channel: object, message: object, *, notify: bool) -> None:
+        self.pinned = (channel, message, notify)
+
+    async def __call__(self, request: object) -> None:
+        self.calls.append(request)
 
 
 @pytest.fixture
@@ -80,6 +105,46 @@ def test_mtproto_membership_errors_have_actionable_states() -> None:
         classify_error(errors.UserNotParticipantError(None)).kind
         == TelegramResultKind.NOT_JOINED
     )
+
+
+@pytest.mark.asyncio
+async def test_mtproto_posts_and_pins_task_brief_without_network() -> None:
+    adapter = object.__new__(TelegramUserService)
+    fake = FakeTelegramClient()
+    adapter.client = fake
+
+    result = await adapter.post_and_pin_task_brief(
+        777,
+        "Set chairs",
+        "Arrange the hall.",
+        datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+    )
+
+    assert result.kind == TelegramResultKind.SUCCESS
+    assert result.value == 42
+    assert fake.sent == (
+        "entity:777",
+        "Task: Set chairs\nDeadline: 2026-08-26T09:00:00+00:00\n\nArrange the hall.",
+    )
+    assert fake.pinned is not None
+    assert fake.pinned[2] is False
+
+
+@pytest.mark.asyncio
+async def test_mtproto_removes_member_with_ban_request_without_network() -> None:
+    adapter = object.__new__(TelegramUserService)
+    fake = FakeTelegramClient()
+    adapter.client = fake
+
+    result = await adapter.remove_user(777, "worker")
+
+    assert result.kind == TelegramResultKind.SUCCESS
+    assert len(fake.calls) == 1
+    request = fake.calls[0]
+    assert isinstance(request, functions.channels.EditBannedRequest)
+    assert request.channel == "entity:777"
+    assert request.participant == "entity:@worker"
+    assert request.banned_rights.view_messages is True
 
 
 def test_event_archive_pdf_contains_event_and_task_text() -> None:
