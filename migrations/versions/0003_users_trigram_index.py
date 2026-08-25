@@ -8,7 +8,7 @@ Create Date: 2026-08-25
 from alembic import op
 
 revision = "0003_users_trigram_index"
-down_revision = "0002_user_readiness_and_sector_state"
+down_revision = "0002_user_readiness"
 branch_labels = None
 depends_on = None
 

@@ -6,9 +6,10 @@ Create Date: 2026-08-25
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
-revision = "0002_user_readiness_and_sector_state"
+revision = "0002_user_readiness"
 down_revision = "0001_initial"
 branch_labels = None
 depends_on = None

@@ -6,9 +6,10 @@ Create Date: 2026-08-25
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
-revision = "0004_task_lifecycle_and_notifications"
+revision = "0004_task_lifecycle"
 down_revision = "0003_users_trigram_index"
 branch_labels = None
 depends_on = None

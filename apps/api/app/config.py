@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_presign_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     bootstrap_admin_telegram_ids: str = ""
+
+    @field_validator("telegram_api_id", mode="before")
+    @classmethod
+    def empty_telegram_api_id_is_unset(cls, value: object) -> object:
+        """Allow the documented blank MTProto setting until group automation is configured."""
+        return None if value == "" else value
 
     @property
     def allowed_origins(self) -> list[str]:
