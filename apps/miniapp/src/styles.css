@@ -21,5 +21,7 @@ header { display: flex; justify-content: space-between; gap: 12px; align-items: 
 .secondary { padding: 9px 11px; border: 1px solid #b9cfbe; border-radius: 9px; background: #fff; color: #1b6146; font-weight: 700; }
 .task-sheet label { display: block; margin: 14px 0 5px; color: #385545; font-size: 12px; font-weight: 700; }.task-sheet textarea { width: 100%; padding: 12px; border: 1px solid #cfd9cb; border-radius: 9px; resize: vertical; }
 .notice { margin-top: 15px; padding: 10px; border-radius: 8px; background: #e4f0e3; color: #24563e; font-size: 12px; }
+.person-result { display: flex; width: 100%; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 9px; border: 1px solid #d6e1d3; border-radius: 8px; background: #fff; color: #315342; text-align: left; }.person-result span { color: #718178; font-size: 11px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.chip { padding: 6px 8px; border: 0; border-radius: 99px; background: #e0eee0; color: #24563e; font-size: 11px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (min-width: 700px) { .task-sheet { width: min(640px, 100%); margin: 0 auto; border-radius: 22px; } }
