@@ -6,14 +6,24 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ChatMemberUpdated, Message
+from aiogram.types import ChatMemberUpdated, KeyboardButton, Message, ReplyKeyboardMarkup
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from sqlalchemy import select
 
 from apps.api.app.config import get_settings
 from apps.api.app.db import SessionLocal
-from apps.api.app.models import MembershipState, Role, TaskChat, TaskChatMember, User, UserStatus
+from apps.api.app.models import (
+    MembershipState,
+    Role,
+    Task,
+    TaskChat,
+    TaskChatMember,
+    TaskMember,
+    TaskStatus,
+    User,
+    UserStatus,
+)
 from apps.api.app.services import normalize_full_name
 
 router = Router()
@@ -21,6 +31,16 @@ router = Router()
 
 class Registration(StatesGroup):
     full_name = State()
+
+
+menu_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📋 Мои задачи"), KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="ℹ️ Помощь")],
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="Выберите действие",
+)
 
 
 async def sync_user(message: Message) -> User:
@@ -62,7 +82,7 @@ async def start(message: Message, state: FSMContext) -> None:
         await state.set_state(Registration.full_name)
         await message.answer("Добро пожаловать! Отправьте ваше имя и фамилию для регистрации.")
         return
-    await message.answer("Вы уже зарегистрированы. Откройте Mini App, чтобы увидеть свои задачи.")
+    await message.answer("Вы уже зарегистрированы. Выберите действие в меню.", reply_markup=menu_keyboard)
 
 
 @router.message(Registration.full_name, F.text)
@@ -88,7 +108,64 @@ async def receive_full_name(message: Message, state: FSMContext) -> None:
             "отправьте /start."
         )
     else:
-        await message.answer("Регистрация завершена. Ваш профиль готов к работе.")
+        await message.answer(
+            "Регистрация завершена. Ваш профиль готов к работе.", reply_markup=menu_keyboard
+        )
+
+
+@router.message(F.text == "📋 Мои задачи")
+async def my_tasks(message: Message) -> None:
+    user = await sync_user(message)
+    async with SessionLocal() as session:
+        tasks = list(
+            (
+                await session.scalars(
+                    select(Task)
+                    .join(TaskMember)
+                    .where(
+                        TaskMember.user_id == user.id,
+                        Task.status.in_(
+                            [TaskStatus.ACTIVE, TaskStatus.RETURNED, TaskStatus.OVERDUE]
+                        ),
+                    )
+                    .order_by(Task.deadline)
+                    .limit(10)
+                )
+            ).all()
+        )
+    if not tasks:
+        await message.answer("Сейчас у вас нет активных задач.", reply_markup=menu_keyboard)
+        return
+    labels = {
+        TaskStatus.ACTIVE: "активна",
+        TaskStatus.RETURNED: "на доработке",
+        TaskStatus.OVERDUE: "просрочена",
+    }
+    lines = ["Ваши активные задачи:"]
+    for task in tasks:
+        deadline = task.deadline.astimezone(UTC).strftime("%d.%m %H:%M")
+        lines.append(f"• {task.title} — {labels[task.status]}, до {deadline}")
+    await message.answer("\n".join(lines), reply_markup=menu_keyboard)
+
+
+@router.message(F.text == "👤 Профиль")
+async def profile(message: Message) -> None:
+    user = await sync_user(message)
+    username = f"@{user.telegram_username}" if user.telegram_username else "не указан"
+    await message.answer(
+        f"Профиль:\nИмя: {user.full_name or 'не заполнено'}\n"
+        f"Имя пользователя: {username}",
+        reply_markup=menu_keyboard,
+    )
+
+
+@router.message(F.text == "ℹ️ Помощь")
+async def help_message(message: Message) -> None:
+    await message.answer(
+        "Нажмите «Мои задачи», чтобы получить список текущих задач. "
+        "В Mini App можно выполнять задачи, прикладывать отчёты и фотографии.",
+        reply_markup=menu_keyboard,
+    )
 
 
 @router.chat_member()
