@@ -543,6 +543,8 @@ async def _process_archive_retention() -> None:
             try:
                 for photo in photos:
                     delete_object(photo.object_key)
+                    if photo.preview_object_key:
+                        delete_object(photo.preview_object_key)
             except Exception:
                 # Do not mark the archive purged until every object deletion succeeded.
                 event.retention_warning_sent_at = now
@@ -639,7 +641,11 @@ async def archive_is_persisted(session, task: Task) -> bool:
         ).all()
     )
     try:
-        return all(object_exists(photo.object_key) for photo in photos)
+        return all(
+            object_exists(photo.object_key)
+            and (not photo.preview_object_key or object_exists(photo.preview_object_key))
+            for photo in photos
+        )
     except Exception:
         return False
 

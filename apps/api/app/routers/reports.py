@@ -1,15 +1,14 @@
 import uuid
 from datetime import UTC, datetime
-from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException
-from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..dependencies import current_user
 from ..models import OutboxEvent, Task, TaskMember, TaskPhoto, TaskReport, TaskStatus, User
+from ..photos import inspect_photo
 from ..schemas import (
     PhotoComplete,
     PhotoOut,
@@ -120,40 +119,23 @@ async def confirm_photo_upload(
             raise HTTPException(
                 status_code=422, detail="Photo size must be between 1 byte and 10 MB"
             )
-        raw = get_object_bytes(body.object_key)
-        with Image.open(BytesIO(raw)) as image:
-            image.verify()
-        with Image.open(BytesIO(raw)) as image:
-            if image.format not in {"JPEG", "PNG", "WEBP"}:
-                raise HTTPException(
-                    status_code=422, detail="Only JPEG, PNG, and WebP photos are allowed"
-                )
-            actual_content_type = {
-                "JPEG": "image/jpeg",
-                "PNG": "image/png",
-                "WEBP": "image/webp",
-            }[image.format]
-            width, height = image.size
-            preview = image.convert("RGB")
-            preview.thumbnail((960, 960))
-            output = BytesIO()
-            preview.save(output, format="JPEG", quality=82, optimize=True)
+        processed = inspect_photo(get_object_bytes(body.object_key))
         preview_key = f"previews/{task_id}/{uuid.uuid4()}.jpg"
-        put_object(preview_key, output.getvalue(), "image/jpeg")
+        put_object(preview_key, processed.preview_bytes, "image/jpeg")
     except HTTPException:
         raise
-    except (UnidentifiedImageError, OSError) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail="Stored object is not a valid image") from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Could not verify photo storage") from exc
     photo = TaskPhoto(
         report_id=report.id,
         object_key=body.object_key,
-        content_type=actual_content_type,
+        content_type=processed.content_type,
         size_bytes=metadata.size_bytes,
         preview_object_key=preview_key,
-        width=width,
-        height=height,
+        width=processed.width,
+        height=processed.height,
         uploaded_by_id=actor.id,
     )
     session.add(photo)

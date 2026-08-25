@@ -1,9 +1,11 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from telethon import errors
@@ -23,6 +25,7 @@ from apps.api.app.models import (
     User,
     UserStatus,
 )
+from apps.api.app.photos import inspect_photo
 from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import (
@@ -101,6 +104,18 @@ def test_event_archive_pdf_contains_event_and_task_text() -> None:
     )
     assert payload.startswith(b"%PDF")
     assert len(payload) > 1000
+
+
+def test_photo_inspection_uses_real_image_format_and_bounded_preview() -> None:
+    source = Image.new("RGB", (1800, 1200), color="navy")
+    encoded = BytesIO()
+    source.save(encoded, format="PNG")
+    result = inspect_photo(encoded.getvalue())
+    assert result.content_type == "image/png"
+    assert (result.width, result.height) == (1800, 1200)
+    with Image.open(BytesIO(result.preview_bytes)) as preview:
+        assert preview.format == "JPEG"
+        assert max(preview.size) <= 960
 
 
 @pytest.mark.asyncio
