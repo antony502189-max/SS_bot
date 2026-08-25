@@ -82,7 +82,9 @@ async def start(message: Message, state: FSMContext) -> None:
         await state.set_state(Registration.full_name)
         await message.answer("Добро пожаловать! Отправьте ваше имя и фамилию для регистрации.")
         return
-    await message.answer("Вы уже зарегистрированы. Выберите действие в меню.", reply_markup=menu_keyboard)
+    await message.answer(
+        "Вы уже зарегистрированы. Выберите действие в меню.", reply_markup=menu_keyboard
+    )
 
 
 @router.message(Registration.full_name, F.text)
