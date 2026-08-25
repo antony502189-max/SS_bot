@@ -11,6 +11,7 @@ from .models import (
     AuditLog,
     Event,
     EventParticipant,
+    Notification,
     OutboxEvent,
     Role,
     Task,
@@ -117,8 +118,14 @@ async def create_task(
         member_ids.add(payload.leader_id)
     if payload.kind.value == "group" and not payload.leader_id:
         raise HTTPException(status_code=422, detail="A group task requires a leader")
+    if payload.kind.value == "individual" and len(member_ids - {actor.id}) != 1:
+        raise HTTPException(
+            status_code=422, detail="An individual task requires exactly one assignee"
+        )
     for user_id in member_ids:
-        await require_active_user(session, user_id)
+        member = await require_active_user(session, user_id)
+        if actor.role == Role.SECTOR_HEAD and member.sector_id != payload.sector_id:
+            raise HTTPException(status_code=403, detail="You can assign only users in your sector")
     task = Task(
         title=payload.title.strip(),
         description=payload.description,
@@ -151,8 +158,26 @@ async def create_task(
             payload={"task_id": str(task.id)},
         )
     )
+    await queue_task_notifications(session, task, member_ids, "TASK_ASSIGNED")
     await audit(session, actor.id, "task.created", "task", task.id, {"kind": task.kind.value})
     return task, False
+
+
+async def queue_task_notifications(
+    session: AsyncSession, task: Task, user_ids: set[uuid.UUID], notification_type: str
+) -> None:
+    for user_id in user_ids:
+        if user_id == task.creator_id and notification_type == "TASK_ASSIGNED":
+            continue
+        session.add(
+            Notification(
+                user_id=user_id,
+                task_id=task.id,
+                event_id=task.event_id,
+                type=notification_type,
+                payload={"task_id": str(task.id), "title": task.title},
+            )
+        )
 
 
 async def is_task_member(session: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID) -> bool:

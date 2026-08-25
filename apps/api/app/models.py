@@ -127,6 +127,7 @@ class Task(UUIDTimestampMixin, Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
     cleanup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TaskMember(UUIDTimestampMixin, Base):
@@ -204,10 +205,23 @@ class TaskChatMember(UUIDTimestampMixin, Base):
 class Notification(UUIDTimestampMixin, Base):
     __tablename__ = "notifications"
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id"), nullable=True, index=True
+    )
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("events.id"), nullable=True, index=True
+    )
     type: Mapped[str] = mapped_column(String(80))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuditLog(UUIDTimestampMixin, Base):

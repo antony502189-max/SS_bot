@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from apps.api.app.models import Base, Role, Sector, TaskMember, User, UserStatus
+from apps.api.app.models import Base, Notification, Role, Sector, TaskMember, User, UserStatus
 from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import create_event, create_task, normalize_full_name, task_cleanup_at
@@ -72,6 +72,12 @@ async def test_creator_is_auto_added_once(session) -> None:
     )
     assert {member.user_id for member in members} == {creator.id, assignee.id}
     assert sum(member.is_creator for member in members) == 1
+    notifications = list(
+        (await session.scalars(select(Notification).where(Notification.task_id == task.id))).all()
+    )
+    assert [(notification.user_id, notification.type) for notification in notifications] == [
+        (assignee.id, "TASK_ASSIGNED")
+    ]
 
 
 @pytest.mark.asyncio

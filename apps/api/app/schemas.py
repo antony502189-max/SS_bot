@@ -127,6 +127,42 @@ class TaskOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    deadline: datetime | None = None
+    leader_id: uuid.UUID | None = None
+
+
+class TaskMemberOut(BaseModel):
+    user: UserOut
+    is_creator: bool
+    is_leader: bool
+
+
+class TaskDetail(TaskOut):
+    members: list[TaskMemberOut]
+    checklist: list["ChecklistItemOut"]
+
+
+class TaskMemberCreate(BaseModel):
+    user_id: uuid.UUID
+
+
+class ChecklistItemCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+
+
+class ChecklistItemOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    position: int
+    is_completed: bool
+    completed_by_id: uuid.UUID | None
+    completed_at: datetime | None
+    model_config = {"from_attributes": True}
+
+
 class ChecklistUpdate(BaseModel):
     is_completed: bool
 
