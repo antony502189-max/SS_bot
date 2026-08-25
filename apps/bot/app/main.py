@@ -54,21 +54,22 @@ async def start(message: Message, state: FSMContext) -> None:
     user = await sync_user(message)
     if user.status == UserStatus.NEEDS_USERNAME:
         await message.answer(
-            "Set a Telegram username, then send /start again to activate your profile."
+            "Укажите имя пользователя в настройках Telegram, затем снова отправьте /start, "
+            "чтобы активировать профиль."
         )
         return
     if user.status != UserStatus.ACTIVE:
         await state.set_state(Registration.full_name)
-        await message.answer("Welcome. Please send your full name to complete registration.")
+        await message.answer("Добро пожаловать! Отправьте ваше имя и фамилию для регистрации.")
         return
-    await message.answer("You are registered. Open the Mini App to see your tasks.")
+    await message.answer("Вы уже зарегистрированы. Откройте Mini App, чтобы увидеть свои задачи.")
 
 
 @router.message(Registration.full_name, F.text)
 async def receive_full_name(message: Message, state: FSMContext) -> None:
     full_name = message.text.strip()
     if len(full_name.split()) < 2 or len(full_name) > 200:
-        await message.answer("Please send your first and last name.")
+        await message.answer("Пожалуйста, отправьте имя и фамилию.")
         return
     user = await sync_user(message)
     async with SessionLocal() as session:
@@ -82,9 +83,12 @@ async def receive_full_name(message: Message, state: FSMContext) -> None:
         await session.commit()
     await state.clear()
     if db_user.status == UserStatus.NEEDS_USERNAME:
-        await message.answer("Full name saved. Set a Telegram username, then send /start again.")
+        await message.answer(
+            "Имя сохранено. Укажите имя пользователя в настройках Telegram, затем снова "
+            "отправьте /start."
+        )
     else:
-        await message.answer("Registration complete. Your profile is ready.")
+        await message.answer("Регистрация завершена. Ваш профиль готов к работе.")
 
 
 @router.chat_member()
