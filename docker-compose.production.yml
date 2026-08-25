@@ -1,0 +1,31 @@
+services:
+  api:
+    ports: []
+  miniapp:
+    ports: []
+  bot:
+    ports: []
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN to your public HTTPS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+      bot:
+        condition: service_started
+      miniapp:
+        condition: service_started
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,11 @@
+{$DOMAIN} {
+    encode zstd gzip
+
+    @api path /api/* /healthz /readyz
+    reverse_proxy @api api:8000
+
+    @telegram_webhook path /webhook
+    reverse_proxy @telegram_webhook bot:8081
+
+    reverse_proxy miniapp:80
+}

@@ -52,6 +52,8 @@ Set-Location apps/miniapp; npm install; npm run build
 
 ## Production notes
 
-Terminate TLS at a reverse proxy, move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
+Use the production edge configuration with `docker compose -f docker-compose.yml -f docker-compose.production.yml up -d`. Set `DOMAIN` and configure `TELEGRAM_WEBHOOK_URL=https://your-domain`; Caddy provisions TLS and routes `/webhook` to the bot, `/api/*` plus health checks to the API, and all other paths to the Mini App. Keep database, Redis, MinIO, and worker ports private.
+
+Move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
 
 JSON logs include `request_id`, method, path, status, and duration. Forward container logs to your observability platform, alert on `/readyz` failures, and test database restore plus object-storage restore on a regular schedule.
