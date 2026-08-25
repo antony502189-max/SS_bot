@@ -5,10 +5,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from apps.api.app.models import Base, Role, TaskMember, User, UserStatus
-from apps.api.app.schemas import TaskCreate
+from apps.api.app.models import Base, Role, Sector, TaskMember, User, UserStatus
+from apps.api.app.schemas import EventCreate, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
-from apps.api.app.services import create_task, normalize_full_name, task_cleanup_at
+from apps.api.app.services import create_event, create_task, normalize_full_name, task_cleanup_at
 
 
 @pytest.fixture
@@ -93,4 +93,40 @@ async def test_group_task_needs_leader(session) -> None:
                 title="Group task", kind="group", deadline=datetime.now(UTC) + timedelta(days=1)
             ),
             "request-2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sector_head_cannot_add_another_sector_participant_to_event(session) -> None:
+    first_sector = Sector(name="First")
+    second_sector = Sector(name="Second")
+    session.add_all([first_sector, second_sector])
+    await session.flush()
+    head = User(
+        telegram_id=3,
+        full_name="Sector Head",
+        normalized_full_name="sector head",
+        status=UserStatus.ACTIVE,
+        role=Role.SECTOR_HEAD,
+        sector_id=first_sector.id,
+    )
+    outsider = User(
+        telegram_id=4,
+        full_name="Other Sector",
+        normalized_full_name="other sector",
+        status=UserStatus.ACTIVE,
+        sector_id=second_sector.id,
+    )
+    session.add_all([head, outsider])
+    await session.flush()
+    with pytest.raises(HTTPException, match="only users in your sector"):
+        await create_event(
+            session,
+            head,
+            EventCreate(
+                title="Event",
+                starts_at=datetime.now(UTC) + timedelta(days=1),
+                sector_id=first_sector.id,
+                participant_ids=[outsider.id],
+            ),
         )

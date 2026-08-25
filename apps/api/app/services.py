@@ -92,7 +92,9 @@ async def create_event(session: AsyncSession, actor: User, payload: EventCreate)
     session.add(event)
     await session.flush()
     for user_id in set(payload.participant_ids):
-        await require_active_user(session, user_id)
+        participant = await require_active_user(session, user_id)
+        if actor.role == Role.SECTOR_HEAD and participant.sector_id != event.sector_id:
+            raise HTTPException(status_code=403, detail="You can assign only users in your sector")
         session.add(EventParticipant(event_id=event.id, user_id=user_id))
     await audit(session, actor.id, "event.created", "event", event.id)
     return event

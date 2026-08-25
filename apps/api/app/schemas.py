@@ -82,6 +82,19 @@ class EventOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EventUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    budget: float | None = Field(default=None, ge=0)
+    sector_id: uuid.UUID | None = None
+
+
+class EventParticipantCreate(BaseModel):
+    user_id: uuid.UUID
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=2, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
