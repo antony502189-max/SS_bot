@@ -1,61 +1,91 @@
 # SS Bot
 
-SS Bot is a Telegram-first task and event system: a bot registers people, a mobile Mini App manages work, PostgreSQL/Object Storage retain the business record, and a dedicated MTProto service account automates temporary working groups.
+SS Bot is a Telegram-first task and event management system. The user-facing product is the Telegram bot itself: registration, task management, events, checklists, reports, photos, leader approval, temporary working groups, archives, and administration are operated through bot messages and buttons.
 
-## Included in this first implementation
+The FastAPI service remains an internal/backend API and health surface. PostgreSQL and Object Storage are the source of truth. A dedicated MTProto service account automates temporary Telegram working groups for group tasks.
 
-- Telegram `/start` registration with mandatory full name and username refresh.
-- Async FastAPI API with users, sectors, events, tasks, checklist state, reports, audit logs, and a PostgreSQL transactional outbox.
-- Creator auto-membership, group-leader requirement, idempotent task creation, sector-scoped authorization, and name/username search.
-- MTProto adapter with categorized Telegram errors, direct invitations, invite-link fallback, 30-minute reminder scheduling, join handling, cleanup warning/revocation/deletion workflow.
-- Mobile-first Telegram Mini App shell for authenticated users, task queue, and administrative task creation.
-- Docker Compose services for PostgreSQL, Redis, MinIO, API, worker, bot, and the Mini App.
+## Implemented bot workflows
 
-## Security first
+- Telegram `/start` registration with mandatory full name, Telegram ID, and current `@username` synchronization.
+- Role-aware bot menu for participants, sector heads, and administrators.
+- Task lists with filters and detailed task cards.
+- Individual and group task creation directly in the bot.
+- Event selection during task creation.
+- Full-name / `@username` assignee search with multi-select buttons.
+- Separate group-leader selection.
+- Task description, deadline, and checklist creation.
+- Creator auto-membership.
+- Checklist completion directly from task buttons.
+- Manager task editing, member add/remove, leader replacement, checklist management, and cancellation.
+- Report draft, comment, up to five JPEG/PNG/WebP photos, photo preview/delete, final submission, return for rework, resubmission, and leader approval.
+- Telegram working-group status, invite retry, group recovery, and direct link to the working group.
+- Event creation, participant selection, archive view, PDF export, photo ZIP export, and retention extension.
+- Administrator user management for roles and activation state.
+- Automatic group creation, direct invite/fallback invite link, 30-minute reminders until join, membership reconciliation, cleanup warning, and group deletion.
+- PostgreSQL transactional outbox, retry/backoff, audit logs, deadline reminders, overdue processing, retention, and archive purge.
 
-Never put a bot token, Telethon session, database password, or S3 secret in Git. Copy `.env.example` to `.env` and fill values locally. If a bot token was ever posted in a chat, screenshot, terminal, or commit, revoke it in BotFather and generate a replacement before using the bot.
+The old Mini App source may remain in the repository for possible future reuse, but it is not part of the runtime, production routing, or CI acceptance path.
+
+## Security
+
+Never commit a bot token, Telethon session, database password, or S3 secret. Copy `.env.example` to `.env` and fill values locally. If a bot token or Telegram service session was ever exposed, revoke/replace it before production use.
 
 ## Run locally
 
-1. Install Python 3.12+ and Node 22+.
-2. Copy the example: `Copy-Item .env.example .env`.
-3. Set a fresh `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, and `BOOTSTRAP_ADMIN_TELEGRAM_IDS` in `.env`. For the group automation, also configure the dedicated MTProto account variables.
-4. Start the stack: `docker compose up --build`.
-5. The API is at `http://localhost:8000`; `/healthz` reports process health and `/readyz` verifies database access. The packaged Mini App is at `http://localhost:8080`.
+1. Install Python 3.12+ and Docker.
+2. Copy `.env.example` to `.env`.
+3. Configure a fresh `TELEGRAM_BOT_TOKEN` and `BOOTSTRAP_ADMIN_TELEGRAM_IDS`.
+4. For automatic working-group management, configure the dedicated MTProto account variables.
+5. Start the stack:
 
-For a local API-only iteration, install the project and run:
+```powershell
+docker compose up --build
+```
+
+The API is available on `http://localhost:8000`; `/healthz` reports process health and `/readyz` verifies database access. The bot uses long polling locally unless `TELEGRAM_WEBHOOK_URL` is configured.
+
+For a local Python-only iteration:
 
 ```powershell
 python -m pip install -e .
 $env:APP_ENV = 'development'
-uvicorn apps.api.app.main:app --reload
+python -m apps.bot.app.main
 ```
 
-The development default uses SQLite; Docker uses PostgreSQL and runs `alembic upgrade head` before starting the API.
+The development default can use SQLite; Docker uses PostgreSQL and runs `alembic upgrade head` before starting the API.
 
 ## Telegram onboarding
 
-1. Create the bot with BotFather and configure the Mini App URL with HTTPS in production.
-2. In production set `TELEGRAM_WEBHOOK_URL` to the public HTTPS base URL and keep a long random `TELEGRAM_WEBHOOK_SECRET`; the bot serves the configured `TELEGRAM_WEBHOOK_PATH` (default `/webhook`). Local development uses polling.
-3. Create a separate Telegram user account for MTProto group operations. Authorize its Telethon session interactively in a protected environment, then mount the resulting session file where `TELEGRAM_SERVICE_SESSION_PATH` points.
-4. Add the bot to a non-production test group first and verify its limited admin permissions and `chat_member` updates.
+1. Create the bot with BotFather.
+2. Put the new bot token in `TELEGRAM_BOT_TOKEN`.
+3. Configure `BOOTSTRAP_ADMIN_TELEGRAM_IDS` with the initial administrator Telegram IDs.
+4. In production set `TELEGRAM_WEBHOOK_URL` to the public HTTPS base URL and configure a long random `TELEGRAM_WEBHOOK_SECRET`.
+5. Create a separate organization-owned Telegram user account for MTProto group operations.
+6. Authorize its Telethon session in a protected environment and mount the resulting session where `TELEGRAM_SERVICE_SESSION_PATH` points.
+7. Test group creation/invitation/deletion with non-production Telegram accounts before real use.
 
-Read [the Telegram integration notes](docs/telegram-api-notes.md) before enabling live automation.
+Read `docs/telegram-api-notes.md` before enabling live group automation.
 
 ## Tests and quality checks
 
 ```powershell
-python -m pytest
+python -m pip install -e '.[dev]'
 python -m ruff check .
-Set-Location apps/miniapp; npm install; npm run build
+python -m pytest
 ```
 
-## Production notes
+GitHub Actions runs the same Python bot/backend checks. The Mini App is intentionally not part of CI.
 
-Use the production edge configuration with `docker compose -f docker-compose.yml -f docker-compose.production.yml up -d`. Set `DOMAIN` and configure `TELEGRAM_WEBHOOK_URL=https://your-domain`; Caddy provisions TLS and routes `/webhook` to the bot, `/api/*` plus health checks to the API, and all other paths to the Mini App. Keep database, Redis, MinIO, and worker ports private.
+## Production
 
-Move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
+Start production with:
 
-JSON logs include `request_id`, method, path, status, and duration. Forward container logs to your observability platform, alert on `/readyz` failures, and test database restore plus object-storage restore on a regular schedule.
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+```
 
-See the [production operations runbook](docs/operations-runbook.md) for deployment, staging acceptance, backup/restore, rollback, and incident-response procedures.
+Set `DOMAIN` and `TELEGRAM_WEBHOOK_URL=https://your-domain`. Caddy terminates TLS and routes `/webhook` to the bot and `/api/*`, `/healthz`, and `/readyz` to the API. There is no public Mini App runtime.
+
+Keep PostgreSQL, Redis, MinIO, workers, and the MTProto session private. Use a secret manager, managed backups where possible, and verify database/object-storage restore procedures before production rollout.
+
+See `docs/operations-runbook.md` for staging acceptance, backup/restore, rollback, and incident-response procedures.
