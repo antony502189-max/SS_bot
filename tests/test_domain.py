@@ -15,6 +15,7 @@ from apps.api.app.archive import build_event_archive_pdf
 from apps.api.app.main import app
 from apps.api.app.models import (
     Base,
+    ChatStatus,
     Event,
     Notification,
     Role,
@@ -38,10 +39,12 @@ from apps.api.app.services import (
 )
 from apps.bot.app.main import parse_input_datetime, people_keyboard
 from apps.telegram_user_service.app.client import (
+    TelegramResult,
     TelegramResultKind,
     TelegramUserService,
     classify_error,
 )
+from apps.worker.app import tasks as worker_tasks
 from apps.worker.app.tasks import celery_app
 
 
@@ -305,6 +308,69 @@ async def test_group_task_creates_pending_chat_in_task_transaction(session) -> N
     assert chat is not None
     assert chat.telegram_chat_id is None
     assert task.cleanup_at == cleanup_at
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deletes_group_when_scheduled_time_arrives(session, monkeypatch) -> None:
+    creator = User(
+        telegram_id=12,
+        full_name="Cleanup Creator",
+        normalized_full_name="cleanup creator",
+        status=UserStatus.ACTIVE,
+        role=Role.ADMIN,
+    )
+    session.add(creator)
+    await session.flush()
+    task = Task(
+        title="Cleanup group",
+        kind=TaskKind.GROUP,
+        deadline=datetime.now(UTC) + timedelta(days=1),
+        cleanup_at=datetime.now(UTC) - timedelta(minutes=1),
+        creator_id=creator.id,
+        idempotency_key="cleanup-group",
+    )
+    session.add(task)
+    await session.flush()
+    chat = TaskChat(
+        task_id=task.id,
+        telegram_chat_id=-1001234567890,
+        status=ChatStatus.READY,
+    )
+    session.add(chat)
+    await session.commit()
+
+    deleted_chat_ids: list[int] = []
+
+    class FakeTelegramService:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def delete_supergroup(self, chat_id: int) -> TelegramResult:
+            deleted_chat_ids.append(chat_id)
+            return TelegramResult(TelegramResultKind.SUCCESS)
+
+    class ExistingSession:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def archive_is_ready(*_args) -> bool:
+        return True
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", lambda: ExistingSession())
+    monkeypatch.setattr(worker_tasks, "TelegramUserService", FakeTelegramService)
+    monkeypatch.setattr(worker_tasks, "archive_is_persisted", archive_is_ready)
+
+    await worker_tasks._process_cleanup()
+
+    await session.refresh(chat)
+    assert deleted_chat_ids == [-1001234567890]
+    assert chat.status == ChatStatus.DELETED
 
 
 @pytest.mark.asyncio
