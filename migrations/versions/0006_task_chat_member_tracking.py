@@ -1,7 +1,6 @@
 """Track task-chat membership reconciliation and reminder delivery."""
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0006_task_chat_member_tracking"
@@ -17,7 +16,7 @@ def _columns() -> set[str]:
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        op.execute("ALTER TYPE membershipstate ADD VALUE IF NOT EXISTS 'not_joined'")
+        op.execute("ALTER TYPE membershipstate ADD VALUE IF NOT EXISTS 'NOT_JOINED'")
     existing = _columns()
     additions = {
         "last_reminder_at": sa.DateTime(timezone=True),
