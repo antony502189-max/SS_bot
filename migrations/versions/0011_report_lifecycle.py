@@ -37,13 +37,23 @@ def upgrade() -> None:
         with op.batch_alter_table("task_reports") as batch:
             batch.add_column(sa.Column("returned_at", sa.DateTime(timezone=True), nullable=True))
 
-    # Existing reports represent already submitted work. Preserve approved reports as approved.
-    op.execute(
-        sa.text(
-            "UPDATE task_reports SET status = CASE "
-            "WHEN approved_at IS NOT NULL THEN 'APPROVED' ELSE 'SUBMITTED' END"
+    # Existing reports represent already submitted work. PostgreSQL needs an explicit
+    # enum cast here; SQLite stores the same field as text.
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                "UPDATE task_reports SET status = CASE "
+                "WHEN approved_at IS NOT NULL THEN 'APPROVED'::reportstatus "
+                "ELSE 'SUBMITTED'::reportstatus END"
+            )
         )
-    )
+    else:
+        op.execute(
+            sa.text(
+                "UPDATE task_reports SET status = CASE "
+                "WHEN approved_at IS NOT NULL THEN 'APPROVED' ELSE 'SUBMITTED' END"
+            )
+        )
 
 
 def downgrade() -> None:
