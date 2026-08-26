@@ -24,7 +24,7 @@ The FastAPI service remains an internal/backend API and health surface. PostgreS
 - Automatic group creation, direct invite/fallback invite link, 30-minute reminders until join, membership reconciliation, cleanup warning, and group deletion.
 - PostgreSQL transactional outbox, retry/backoff, audit logs, deadline reminders, overdue processing, retention, and archive purge.
 
-The old Mini App source may remain in the repository for possible future reuse, but it is not part of the runtime, production routing, or CI acceptance path.
+The previous Telegram Mini App has been removed from the project. There is no Mini App runtime, source bundle, production route, Node build, or Mini App dependency in the acceptance path. New user-facing functionality belongs in the Telegram bot.
 
 ## Security
 
@@ -74,7 +74,7 @@ python -m ruff check .
 python -m pytest
 ```
 
-GitHub Actions runs the same Python bot/backend checks. The Mini App is intentionally not part of CI.
+GitHub Actions validates the Python bot/backend, applies the complete Alembic migration chain on PostgreSQL 16, and validates the Docker Compose configuration.
 
 ## Production
 
