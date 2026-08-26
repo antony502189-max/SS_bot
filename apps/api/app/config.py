@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "sqlite+aiosqlite:///./ss_bot.db"
     redis_url: str = "redis://localhost:6379/0"
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = ""
     log_level: str = "INFO"
     app_session_secret: str = ""
     session_ttl_minutes: int = Field(default=480, ge=5, le=1440)
@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     telegram_webhook_url: str = ""
     telegram_webhook_path: str = "/webhook"
     telegram_webhook_secret: str = ""
-    mini_app_url: str = "http://localhost:5173"
     telegram_api_id: int | None = None
     telegram_api_hash: str = ""
     telegram_service_phone: str = ""
