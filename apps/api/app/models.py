@@ -52,6 +52,13 @@ class TaskStatus(enum.StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReportStatus(enum.StrEnum):
+    DRAFT = "draft"
+    SUBMITTED = "submitted"
+    RETURNED = "returned"
+    APPROVED = "approved"
+
+
 class ChatStatus(enum.StrEnum):
     PENDING = "pending_creation"
     CREATING = "creating"
@@ -171,11 +178,13 @@ class TaskReport(UUIDTimestampMixin, Base):
         ForeignKey("tasks.id", ondelete="CASCADE"), unique=True
     )
     submitted_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[ReportStatus] = mapped_column(default=ReportStatus.DRAFT, index=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     approval_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -217,9 +226,7 @@ class TaskChatMember(UUIDTimestampMixin, Base):
     next_reminder_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    last_reminder_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reminder_count: Mapped[int] = mapped_column(Integer, default=0)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
