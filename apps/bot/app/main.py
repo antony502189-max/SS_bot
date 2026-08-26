@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import os
 import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -40,6 +42,7 @@ from apps.api.app.services import create_task, normalize_full_name
 
 router = Router()
 USER_TIMEZONE = ZoneInfo("Europe/Minsk")
+logger = logging.getLogger(__name__)
 
 
 class Registration(StatesGroup):
@@ -459,10 +462,10 @@ async def run() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
-    bot = Bot(token)
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     if settings.telegram_webhook_url:
+        bot = Bot(token)
         path = settings.telegram_webhook_path
         if not path.startswith("/"):
             path = f"/{path}"
@@ -478,8 +481,24 @@ async def run() -> None:
         setup_application(application, dispatcher, bot=bot)
         await web._run_app(application, host="0.0.0.0", port=8081)
         return
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dispatcher.start_polling(bot, allowed_updates=["message", "chat_member"])
+    retry_seconds = 5
+    while True:
+        bot = Bot(token)
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            await dispatcher.start_polling(
+                bot,
+                allowed_updates=["message", "chat_member"],
+                close_bot_session=False,
+            )
+            return
+        except TelegramNetworkError as exc:
+            logger.warning(
+                "Telegram temporarily unavailable; retrying in %s seconds: %s", retry_seconds, exc
+            )
+        finally:
+            await bot.session.close()
+        await asyncio.sleep(retry_seconds)
 
 
 if __name__ == "__main__":

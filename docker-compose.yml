@@ -25,6 +25,7 @@ services:
     env_file: ${ENV_FILE:-.env}
     command: sh -c "alembic upgrade head && uvicorn apps.api.app.main:app --host 0.0.0.0 --port 8000"
     ports: ["8000:8000"]
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
@@ -34,6 +35,7 @@ services:
     command: celery -A apps.worker.app.tasks.celery_app worker --beat --loglevel=INFO
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
@@ -41,6 +43,7 @@ services:
     build: .
     env_file: ${ENV_FILE:-.env}
     command: python -m apps.bot.app.main
+    restart: unless-stopped
     depends_on:
       api: { condition: service_started }
   miniapp:
