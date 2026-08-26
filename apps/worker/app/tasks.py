@@ -73,24 +73,24 @@ async def notify(telegram_id: int, text: str) -> None:
 
 
 def notification_text(notification: Notification) -> str:
-    title = str(notification.payload.get("title", "task"))
+    title = str(notification.payload.get("title", "задача"))
     if notification.type == "TASK_ASSIGNED":
-        return f"You were assigned to: {title}"
+        return f"Вам назначена задача: {title}"
     if notification.type == "TASK_UPDATED":
-        return f"Task updated: {title}"
+        return f"Задача обновлена: {title}"
     if notification.type == "TASK_DEADLINE_24H":
-        return f"Deadline reminder: {title} is due within 24 hours."
+        return f"Напоминание: срок задачи «{title}» наступит в течение 24 часов."
     if notification.type == "TASK_OVERDUE":
-        return f"Overdue task: {title} has passed its deadline."
+        return f"Задача просрочена: «{title}»."
     if notification.type == "TASK_CANCELLED":
-        return f"Task cancelled: {title}"
+        return f"Задача отменена: {title}"
     if notification.type == "TASK_SUBMITTED":
-        return f"Report submitted for: {title}"
+        return f"По задаче отправлен отчёт: {title}"
     if notification.type == "TASK_COMPLETED":
-        return f"Task completed: {title}"
+        return f"Задача выполнена: {title}"
     if notification.type == "ARCHIVE_DELETION_30D":
-        return f"Archive retention warning: {title} will be deleted in 30 days."
-    return f"SS Bot notification: {title}"
+        return f"Внимание: архив «{title}» будет удалён через 30 дней."
+    return f"Уведомление SS Bot: {title}"
 
 
 async def _send_due_notifications() -> None:
@@ -211,7 +211,7 @@ async def provision_task_chat(task_id: str) -> None:
         try:
             async with TelegramUserService() as telegram:
                 created = await telegram.create_supergroup(
-                    f"Task: {task.title}", task.description or "Temporary SS Bot working group"
+                    f"Задача: {task.title}", task.description or "Рабочая группа SS Bot"
                 )
                 if created.kind != TelegramResultKind.SUCCESS:
                     chat.status = ChatStatus.FAILED
@@ -299,7 +299,7 @@ async def invite_task_chat_member(
     entry.invite_link_created_at = now
     entry.next_reminder_at = now + timedelta(minutes=30)
     if user:
-        await notify(user.telegram_id, f"Join the working group for ‘{task.title}’: {invite.value}")
+        await notify(user.telegram_id, f"Вступите в рабочую группу «{task.title}»: {invite.value}")
 
 
 async def _process_outbox() -> None:
@@ -411,9 +411,7 @@ async def _recover_task_chat(task_id: str) -> None:
             await session.commit()
 
 
-async def ensure_task_brief(
-    telegram: TelegramUserService, task: Task, chat: TaskChat
-):
+async def ensure_task_brief(telegram: TelegramUserService, task: Task, chat: TaskChat):
     if chat.pinned_message_id:
         return TelegramResult(TelegramResultKind.SUCCESS)
     result = await telegram.post_and_pin_task_brief(
@@ -430,12 +428,16 @@ async def _remove_task_chat_member(task_id: str, user_id: str) -> None:
         if not task:
             return
         chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
-        member = await session.scalar(
-            select(TaskChatMember).where(
-                TaskChatMember.task_chat_id == chat.id,
-                TaskChatMember.user_id == uuid.UUID(user_id),
+        member = (
+            await session.scalar(
+                select(TaskChatMember).where(
+                    TaskChatMember.task_chat_id == chat.id,
+                    TaskChatMember.user_id == uuid.UUID(user_id),
+                )
             )
-        ) if chat else None
+            if chat
+            else None
+        )
         user = await session.get(User, uuid.UUID(user_id))
         if not chat or not chat.telegram_chat_id or not member or not user:
             return
@@ -472,7 +474,7 @@ async def _send_invite_reminders() -> None:
             if user and member.invite_link:
                 await notify(
                     user.telegram_id,
-                    f"Reminder: join your task working group: {member.invite_link}",
+                    f"Напоминание: вступите в рабочую группу задачи: {member.invite_link}",
                 )
             member.last_reminder_at = now
             member.reminder_count += 1
@@ -498,9 +500,7 @@ async def _reconcile_task_chat_members() -> None:
                     .where(
                         TaskChat.status == ChatStatus.READY,
                         TaskChat.telegram_chat_id.is_not(None),
-                        TaskChatMember.state.in_(
-                            [MembershipState.INVITED, MembershipState.JOINED]
-                        ),
+                        TaskChatMember.state.in_([MembershipState.INVITED, MembershipState.JOINED]),
                     )
                     .with_for_update(skip_locked=True)
                     .limit(100)
@@ -656,7 +656,7 @@ async def _process_cleanup() -> None:
                     if user:
                         await notify(
                             user.telegram_id,
-                            f"The working group for ‘{task.title}’ will be deleted in 24 hours.",
+                            f"Рабочая группа задачи «{task.title}» будет удалена через 24 часа.",
                         )
                 chat.cleanup_warned_at = now
             if task.cleanup_at <= now and chat.telegram_chat_id:

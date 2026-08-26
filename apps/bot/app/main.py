@@ -2,9 +2,10 @@ import asyncio
 import os
 import uuid
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -38,6 +39,7 @@ from apps.api.app.schemas import TaskCreate
 from apps.api.app.services import create_task, normalize_full_name
 
 router = Router()
+USER_TIMEZONE = ZoneInfo("Europe/Minsk")
 
 
 class Registration(StatesGroup):
@@ -94,6 +96,15 @@ async def sync_user(message: Message) -> User:
         return user
 
 
+def parse_input_datetime(value: str) -> datetime:
+    """Interpret dates entered in the bot as Minsk local time, then store them in UTC."""
+    return (
+        datetime.strptime(value.strip(), "%d.%m.%Y %H:%M")
+        .replace(tzinfo=USER_TIMEZONE)
+        .astimezone(UTC)
+    )
+
+
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
     user = await sync_user(message)
@@ -110,6 +121,15 @@ async def start(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Вы уже зарегистрированы. Выберите действие в меню.", reply_markup=menu_keyboard
     )
+
+
+@router.message(Command("cancel"))
+async def cancel_action(message: Message, state: FSMContext) -> None:
+    if await state.get_state():
+        await state.clear()
+        await message.answer("Текущая операция отменена.", reply_markup=menu_keyboard)
+        return
+    await message.answer("Сейчас нет операции, которую нужно отменить.", reply_markup=menu_keyboard)
 
 
 @router.message(Registration.full_name, F.text)
@@ -180,8 +200,7 @@ async def profile(message: Message) -> None:
     user = await sync_user(message)
     username = f"@{user.telegram_username}" if user.telegram_username else "не указан"
     await message.answer(
-        f"Профиль:\nИмя: {user.full_name or 'не заполнено'}\n"
-        f"Имя пользователя: {username}",
+        f"Профиль:\nИмя: {user.full_name or 'не заполнено'}\nИмя пользователя: {username}",
         reply_markup=menu_keyboard,
     )
 
@@ -190,7 +209,8 @@ async def profile(message: Message) -> None:
 async def help_message(message: Message) -> None:
     await message.answer(
         "Нажмите «Мои задачи», чтобы получить список текущих задач. "
-        "В Mini App можно выполнять задачи, прикладывать отчёты и фотографии.",
+        "Администраторы создают личные и групповые задачи через кнопку «Выдать задачу». "
+        "Для отмены начатого действия отправьте /cancel.",
         reply_markup=menu_keyboard,
     )
 
@@ -226,7 +246,7 @@ async def issue_task_start(message: Message, state: FSMContext) -> None:
         await message.answer("Выдавать задачи могут только администраторы и руководители секторов.")
         return
     await state.set_state(TaskIssue.title)
-    await message.answer("Введите название задачи.")
+    await message.answer("Введите название задачи. Для отмены в любой момент отправьте /cancel.")
 
 
 @router.message(TaskIssue.title, F.text)
@@ -239,10 +259,14 @@ async def issue_task_title(message: Message, state: FSMContext) -> None:
     await state.set_state(TaskIssue.kind)
     await message.answer(
         "Выберите тип задачи.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👤 Личная", callback_data="issue:kind:individual"),
-            InlineKeyboardButton(text="👥 Групповая", callback_data="issue:kind:group"),
-        ]]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👤 Личная", callback_data="issue:kind:individual"),
+                    InlineKeyboardButton(text="👥 Групповая", callback_data="issue:kind:group"),
+                ]
+            ]
+        ),
     )
 
 
@@ -253,7 +277,8 @@ async def issue_task_kind(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(TaskIssue.people)
     await callback.answer()
     await callback.message.answer(
-        "Введите часть имени или @username. Результаты появятся кнопками."
+        "Введите часть имени или @username. Результаты появятся кнопками. "
+        "Для групповой задачи вы добавитесь в группу автоматически."
     )
 
 
@@ -282,11 +307,13 @@ async def issue_task_people(message: Message, state: FSMContext) -> None:
         await message.answer("Введите минимум две буквы имени или username.")
         return
     data = await state.get_data()
+    actor = await sync_user(message)
     async with SessionLocal() as session:
         statement = (
             select(User)
             .where(
                 User.status == UserStatus.ACTIVE,
+                User.id != actor.id,
                 or_(
                     User.telegram_username.ilike(f"%{query}%"),
                     User.normalized_full_name.ilike(f"%{normalize_full_name(query)}%"),
@@ -343,22 +370,32 @@ async def issue_task_people_done(callback: CallbackQuery, state: FSMContext) -> 
 @router.message(TaskIssue.deadline, F.text)
 async def issue_task_deadline(message: Message, state: FSMContext) -> None:
     try:
-        deadline = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
+        deadline = parse_input_datetime(message.text)
     except ValueError:
         await message.answer("Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ.")
         return
     await state.update_data(deadline=deadline.isoformat())
+    data = await state.get_data()
+    if data["kind"] == "individual":
+        await create_issued_task(message, state, cleanup_at=None)
+        return
     await state.set_state(TaskIssue.cleanup)
-    await message.answer("Введите время удаления рабочей группы: ДД.ММ.ГГГГ ЧЧ:ММ.")
+    await message.answer("Введите время удаления рабочей группы: ДД.ММ.ГГГГ ЧЧ:ММ (минское время).")
 
 
 @router.message(TaskIssue.cleanup, F.text)
 async def issue_task_cleanup(message: Message, state: FSMContext) -> None:
     try:
-        cleanup_at = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
+        cleanup_at = parse_input_datetime(message.text)
     except ValueError:
         await message.answer("Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ.")
         return
+    await create_issued_task(message, state, cleanup_at=cleanup_at)
+
+
+async def create_issued_task(
+    message: Message, state: FSMContext, cleanup_at: datetime | None
+) -> None:
     data = await state.get_data()
     actor = await sync_user(message)
     try:
@@ -371,7 +408,7 @@ async def issue_task_cleanup(message: Message, state: FSMContext) -> None:
                 TaskCreate(
                     title=data["title"],
                     deadline=datetime.fromisoformat(data["deadline"]),
-                    cleanup_at=cleanup_at if data["kind"] == "group" else None,
+                    cleanup_at=cleanup_at,
                     kind=TaskKind(data["kind"]),
                     leader_id=actor.id if data["kind"] == "group" else None,
                     member_ids=[uuid.UUID(value) for value in data["member_ids"]],
