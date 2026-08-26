@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  api:
+  bot-backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,12 +14,3 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: python -m ruff check .
       - run: python -m pytest
-  miniapp:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: apps/miniapp } }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22', cache: npm, cache-dependency-path: apps/miniapp/package.json }
-      - run: npm install
-      - run: npm run build
