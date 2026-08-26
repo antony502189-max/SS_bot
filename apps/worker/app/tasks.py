@@ -42,7 +42,7 @@ celery_app.conf.beat_schedule = {
         "task": "apps.worker.app.tasks.send_invite_reminders",
         "schedule": 60.0,
     },
-    "cleanup-every-hour": {"task": "apps.worker.app.tasks.process_cleanup", "schedule": 3600.0},
+    "cleanup-every-minute": {"task": "apps.worker.app.tasks.process_cleanup", "schedule": 60.0},
     "notifications-every-minute": {
         "task": "apps.worker.app.tasks.send_due_notifications",
         "schedule": 60.0,

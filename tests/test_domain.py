@@ -36,11 +36,13 @@ from apps.api.app.services import (
     refresh_event_retention,
     task_cleanup_at,
 )
+from apps.bot.app.main import parse_input_datetime, people_keyboard
 from apps.telegram_user_service.app.client import (
     TelegramResultKind,
     TelegramUserService,
     classify_error,
 )
+from apps.worker.app.tasks import celery_app
 
 
 class FakeTelegramClient:
@@ -79,6 +81,29 @@ def test_full_name_normalization() -> None:
     assert normalize_full_name("  Ёлкин\u00a0Пётр ") == "елкин петр"
 
 
+def test_bot_dates_use_minsk_time() -> None:
+    assert parse_input_datetime("31.12.2026 12:00") == datetime(2026, 12, 31, 9, tzinfo=UTC)
+
+
+def test_people_keyboard_keeps_multiple_selected_people() -> None:
+    first = User(id=uuid.uuid4(), telegram_id=101, full_name="Анна Тест", status=UserStatus.ACTIVE)
+    second = User(
+        id=uuid.uuid4(), telegram_id=102, full_name="Борис Тест", status=UserStatus.ACTIVE
+    )
+
+    keyboard = people_keyboard([first, second], {str(first.id), str(second.id)})
+
+    assert [row[0].text for row in keyboard.inline_keyboard] == [
+        "✅ Анна Тест",
+        "✅ Борис Тест",
+        "Готово (2)",
+    ]
+
+
+def test_group_cleanup_runs_each_minute() -> None:
+    assert celery_app.conf.beat_schedule["cleanup-every-minute"]["schedule"] == 60.0
+
+
 def test_signed_session_round_trip() -> None:
     token = issue_access_token("08a093e2-5b38-44be-9e6e-ae4e935c39fc", "test-secret", 5)
     assert verify_access_token(token, "test-secret") == "08a093e2-5b38-44be-9e6e-ae4e935c39fc"
@@ -102,8 +127,7 @@ def test_mtproto_membership_errors_have_actionable_states() -> None:
     already_member = classify_error(errors.UserAlreadyParticipantError(None))
     assert already_member.kind == TelegramResultKind.SUCCESS
     assert (
-        classify_error(errors.UserNotParticipantError(None)).kind
-        == TelegramResultKind.NOT_JOINED
+        classify_error(errors.UserNotParticipantError(None)).kind == TelegramResultKind.NOT_JOINED
     )
 
 
