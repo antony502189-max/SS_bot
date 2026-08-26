@@ -7,5 +7,5 @@
     @telegram_webhook path /webhook
     reverse_proxy @telegram_webhook bot:8081
 
-    reverse_proxy miniapp:80
+    respond "SS Bot is running" 200
 }
