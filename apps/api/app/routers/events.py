@@ -7,7 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..archive import build_event_archive_pdf, build_photo_zip
 from ..db import get_session
 from ..dependencies import current_user
-from ..models import Event, EventParticipant, Role, Task, TaskPhoto, TaskReport, User
+from ..models import (
+    Event,
+    EventParticipant,
+    ReportStatus,
+    Role,
+    Task,
+    TaskMember,
+    TaskPhoto,
+    TaskReport,
+    User,
+)
 from ..schemas import (
     ArchiveReportOut,
     ArchiveTaskOut,
@@ -28,6 +38,7 @@ router = APIRouter(prefix="/events", tags=["events"])
 async def list_events(
     actor: User = Depends(current_user), session: AsyncSession = Depends(get_session)
 ) -> list[Event]:
+    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     statement = select(Event).where(Event.purged_at.is_(None)).order_by(Event.starts_at.desc())
     if actor.role == Role.SECTOR_HEAD:
         statement = statement.where(Event.sector_id == actor.sector_id)
@@ -48,6 +59,7 @@ async def create_event_route(
 
 
 async def event_for_manager(session: AsyncSession, event_id: uuid.UUID, actor: User) -> Event:
+    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -56,13 +68,29 @@ async def event_for_manager(session: AsyncSession, event_id: uuid.UUID, actor: U
 
 
 async def archive_out(session: AsyncSession, event: Event) -> EventArchiveOut:
-    participants = list(
+    explicit_participants = list(
         (
             await session.scalars(
                 select(User).join(EventParticipant).where(EventParticipant.event_id == event.id)
             )
         ).all()
     )
+    task_participants = list(
+        (
+            await session.scalars(
+                select(User)
+                .join(TaskMember, TaskMember.user_id == User.id)
+                .join(Task, Task.id == TaskMember.task_id)
+                .where(Task.event_id == event.id)
+            )
+        ).unique().all()
+    )
+    participants_by_id = {user.id: user for user in explicit_participants + task_participants}
+    participants = sorted(
+        participants_by_id.values(),
+        key=lambda user: (user.full_name or "", user.telegram_username or ""),
+    )
+
     tasks = list(
         (
             await session.scalars(
@@ -70,24 +98,35 @@ async def archive_out(session: AsyncSession, event: Event) -> EventArchiveOut:
             )
         ).all()
     )
-    reports = {
-        report.task_id: report
-        for report in (
-            await session.scalars(
-                select(TaskReport).where(TaskReport.task_id.in_([task.id for task in tasks]))
-            )
-        ).all()
-    } if tasks else {}
-    photo_counts = {
-        report_id: count
-        for report_id, count in (
-            await session.execute(
-                select(TaskPhoto.report_id, func.count())
-                .where(TaskPhoto.report_id.in_([report.id for report in reports.values()]))
-                .group_by(TaskPhoto.report_id)
-            )
-        ).all()
-    } if reports else {}
+    reports = (
+        {
+            report.task_id: report
+            for report in (
+                await session.scalars(
+                    select(TaskReport).where(
+                        TaskReport.task_id.in_([task.id for task in tasks]),
+                        TaskReport.status != ReportStatus.DRAFT,
+                    )
+                )
+            ).all()
+        }
+        if tasks
+        else {}
+    )
+    photo_counts = (
+        {
+            report_id: count
+            for report_id, count in (
+                await session.execute(
+                    select(TaskPhoto.report_id, func.count())
+                    .where(TaskPhoto.report_id.in_([report.id for report in reports.values()]))
+                    .group_by(TaskPhoto.report_id)
+                )
+            ).all()
+        }
+        if reports
+        else {}
+    )
     return EventArchiveOut(
         event=EventOut.model_validate(event, from_attributes=True),
         participants=[UserOut.model_validate(user, from_attributes=True) for user in participants],
@@ -123,7 +162,6 @@ async def get_event(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Event:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     return await event_for_manager(session, event_id, actor)
 
 
@@ -133,7 +171,6 @@ async def get_event_archive(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> EventArchiveOut:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     if event.purged_at:
         raise HTTPException(status_code=410, detail="Archive has passed its retention period")
@@ -146,7 +183,6 @@ async def export_event_pdf(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     if event.purged_at:
         raise HTTPException(status_code=410, detail="Archive has passed its retention period")
@@ -169,7 +205,6 @@ async def export_event_photos(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     if event.purged_at:
         raise HTTPException(status_code=410, detail="Archive has passed its retention period")
@@ -237,13 +272,19 @@ async def update_event(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Event:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     changes = body.model_dump(exclude_unset=True)
     target_sector = changes.get("sector_id", event.sector_id)
+    if actor.role == Role.SECTOR_HEAD and target_sector is None:
+        target_sector = actor.sector_id
+        changes["sector_id"] = target_sector
     ensure_sector_access(actor, target_sector)
     if "title" in changes and changes["title"]:
         changes["title"] = changes["title"].strip()
+    starts_at = changes.get("starts_at", event.starts_at)
+    ends_at = changes.get("ends_at", event.ends_at)
+    if ends_at and starts_at and ends_at < starts_at:
+        raise HTTPException(status_code=422, detail="Event end cannot be before its start")
     for key, value in changes.items():
         setattr(event, key, value)
     await audit(session, actor.id, "event.updated", "event", event.id, changes)
@@ -258,7 +299,6 @@ async def list_participants(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[User]:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     await event_for_manager(session, event_id, actor)
     return list(
         (
@@ -276,7 +316,6 @@ async def add_participant(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     user = await require_active_user(session, body.user_id)
     if actor.role == Role.SECTOR_HEAD and user.sector_id != event.sector_id:
@@ -290,7 +329,12 @@ async def add_participant(
         raise HTTPException(status_code=409, detail="User already participates in this event")
     session.add(EventParticipant(event_id=event.id, user_id=user.id))
     await audit(
-        session, actor.id, "event.participant_added", "event", event.id, {"user_id": str(user.id)}
+        session,
+        actor.id,
+        "event.participant_added",
+        "event",
+        event.id,
+        {"user_id": str(user.id)},
     )
     await session.commit()
     return user
@@ -303,17 +347,22 @@ async def remove_participant(
     actor: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    await require_role(session, actor.id, Role.ADMIN, Role.SECTOR_HEAD)
     event = await event_for_manager(session, event_id, actor)
     participant = await session.scalar(
         select(EventParticipant).where(
-            EventParticipant.event_id == event.id, EventParticipant.user_id == user_id
+            EventParticipant.event_id == event.id,
+            EventParticipant.user_id == user_id,
         )
     )
     if not participant:
         raise HTTPException(status_code=404, detail="Event participant not found")
     await session.delete(participant)
     await audit(
-        session, actor.id, "event.participant_removed", "event", event.id, {"user_id": str(user_id)}
+        session,
+        actor.id,
+        "event.participant_removed",
+        "event",
+        event.id,
+        {"user_id": str(user_id)},
     )
     await session.commit()
