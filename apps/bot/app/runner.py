@@ -9,7 +9,7 @@ from aiohttp import web
 
 from apps.api.app.config import get_settings
 from apps.api.app.telegram_bot import build_telegram_bot
-from apps.bot.app.admin_panel import router as admin_panel_router
+from apps.bot.app.admin_panel_v2 import router as admin_panel_router
 from apps.bot.app.main import router as main_router
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,8 @@ async def run() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
     dispatcher = Dispatcher()
-    # The administration router intentionally goes first so it owns the bot-native
-    # administration home/user-card flows while the legacy main router handles all
-    # existing role/status callbacks and the remaining product workflows.
+    # Administration goes first so the bot-native user/sector menu owns those
+    # callbacks. The main router continues to handle all remaining workflows.
     dispatcher.include_router(admin_panel_router)
     dispatcher.include_router(main_router)
 
