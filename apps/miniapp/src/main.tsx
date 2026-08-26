@@ -115,7 +115,9 @@ const headers = (token: string) => ({ Authorization: `Bearer ${token}` })
 async function parseError(response: Response): Promise<string> {
   const body = await response.json().catch(() => null)
   if (typeof body?.detail === 'string') return body.detail
-  if (Array.isArray(body?.detail)) return body.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join('; ')
+  if (Array.isArray(body?.detail)) {
+    return body.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join('; ')
+  }
   return `Request failed (${response.status}).`
 }
 
@@ -154,7 +156,8 @@ const due = (value: string) =>
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
-const personName = (person: User) => person.full_name || (person.telegram_username ? `@${person.telegram_username}` : 'Telegram user')
+const personName = (person: User) =>
+  person.full_name || (person.telegram_username ? `@${person.telegram_username}` : 'Telegram user')
 const Status = ({ value }: { value: string }) => (
   <span className={`status status--${value}`}>{value.replaceAll('_', ' ')}</span>
 )
@@ -318,10 +321,16 @@ function ArchiveSheet({
           {user.role === 'admin' && archive.data.event.retention_delete_at && (
             <section className="sheet-section">
               <h3>Archive retention</h3>
-              <p className="muted">Current deletion date: {due(archive.data.event.retention_delete_at)}</p>
+              <p className="muted">
+                Current deletion date: {due(archive.data.event.retention_delete_at)}
+              </p>
               <label>
                 Extend until
-                <input type="datetime-local" value={retentionUntil} onChange={(e) => setRetentionUntil(e.target.value)} />
+                <input
+                  type="datetime-local"
+                  value={retentionUntil}
+                  onChange={(event) => setRetentionUntil(event.target.value)}
+                />
               </label>
               <button
                 className="secondary"
@@ -370,12 +379,15 @@ function AdminSheet({ token, close }: { token: string; close: () => void }) {
           <div>
             <strong>{person.full_name || 'Unfinished profile'}</strong>
             <span>
-              {person.telegram_username ? `@${person.telegram_username}` : 'No username'} · {person.status}
+              {person.telegram_username ? `@${person.telegram_username}` : 'No username'} ·{' '}
+              {person.status}
             </span>
           </div>
           <select
             value={person.role}
-            onChange={(event) => update.mutate({ id: person.id, patch: { role: event.target.value } })}
+            onChange={(event) =>
+              update.mutate({ id: person.id, patch: { role: event.target.value } })
+            }
           >
             <option value="participant">Participant</option>
             <option value="sector_head">Sector head</option>
@@ -452,14 +464,20 @@ function EventComposer({ token, close }: { token: string; close: () => void }) {
           Description <span className="optional">optional</span>
           <textarea {...register('description')} rows={3} />
         </label>
-        <PersonSearch token={token} selected={participants} onPick={(person) => setParticipants((v) => [...v, person])} />
+        <PersonSearch
+          token={token}
+          selected={participants}
+          onPick={(person) => setParticipants((current) => [...current, person])}
+        />
         <div className="chips">
           {participants.map((person) => (
             <button
               type="button"
               key={person.id}
               className="chip"
-              onClick={() => setParticipants((current) => current.filter((item) => item.id !== person.id))}
+              onClick={() =>
+                setParticipants((current) => current.filter((item) => item.id !== person.id))
+              }
             >
               {personName(person)} ×
             </button>
@@ -494,7 +512,8 @@ function TaskComposer({
   useEffect(() => {
     if (kind === 'individual') setLeaderId('')
   }, [kind])
-  const validMembership = kind === 'individual' ? members.length === 1 : members.length > 0 && Boolean(leaderId)
+  const validMembership =
+    kind === 'individual' ? members.length === 1 : members.length > 0 && Boolean(leaderId)
   const create = useMutation({
     mutationFn: (data: TaskDraft) =>
       api<Task>('/tasks', token, {
@@ -534,7 +553,11 @@ function TaskComposer({
       <form onSubmit={handleSubmit((data) => create.mutate(data))}>
         <label>
           Task title
-          <input {...register('title', { required: true })} autoFocus placeholder="Prepare the venue" />
+          <input
+            {...register('title', { required: true })}
+            autoFocus
+            placeholder="Prepare the venue"
+          />
         </label>
         <label>
           Deadline
@@ -552,19 +575,33 @@ function TaskComposer({
           <select {...register('event_id')}>
             <option value="">No event</option>
             {events.map((event) => (
-              <option value={event.id} key={event.id}>{event.title}</option>
+              <option value={event.id} key={event.id}>
+                {event.title}
+              </option>
             ))}
           </select>
         </label>
         <label>
           Description <span className="optional">optional</span>
-          <textarea {...register('description')} rows={3} placeholder="What good work looks like" />
+          <textarea
+            {...register('description')}
+            rows={3}
+            placeholder="What good work looks like"
+          />
         </label>
         <label>
           Checklist <span className="optional">one item per line</span>
-          <textarea {...register('checklist')} rows={4} placeholder={'Prepare chairs\nCheck sound\nConfirm access'} />
+          <textarea
+            {...register('checklist')}
+            rows={4}
+            placeholder={'Prepare chairs\nCheck sound\nConfirm access'}
+          />
         </label>
-        <PersonSearch token={token} selected={members} onPick={(person) => setMembers((v) => [...v, person])} />
+        <PersonSearch
+          token={token}
+          selected={members}
+          onPick={(person) => setMembers((current) => [...current, person])}
+        />
         <div className="chips">
           {members.map((person) => (
             <button
@@ -586,7 +623,9 @@ function TaskComposer({
             <select value={leaderId} onChange={(event) => setLeaderId(event.target.value)}>
               <option value="">Choose a selected member</option>
               {members.map((person) => (
-                <option value={person.id} key={person.id}>{personName(person)}</option>
+                <option value={person.id} key={person.id}>
+                  {personName(person)}
+                </option>
               ))}
             </select>
           </label>
@@ -641,7 +680,7 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
     const date = new Date(detail.data.deadline)
     const offset = date.getTimezoneOffset() * 60_000
     setEditDeadline(new Date(date.getTime() - offset).toISOString().slice(0, 16))
-  }, [detail.data?.id, detail.data?.updated_at, detail.data?.deadline, detail.data?.title, detail.data?.description])
+  }, [detail.data?.id, detail.data?.deadline, detail.data?.title, detail.data?.description])
 
   const refresh = () => {
     client.invalidateQueries({ queryKey: ['task', task.id] })
@@ -684,7 +723,11 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: file.name, content_type: file.type, size_bytes: file.size }),
+          body: JSON.stringify({
+            filename: file.name,
+            content_type: file.type,
+            size_bytes: file.size,
+          }),
         },
       )
       const uploaded = await fetch(target.upload_url, {
@@ -705,7 +748,8 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
     },
   })
   const deletePhoto = useMutation({
-    mutationFn: (photoId: string) => api(`/tasks/${task.id}/report/photos/${photoId}`, token, { method: 'DELETE' }),
+    mutationFn: (photoId: string) =>
+      api(`/tasks/${task.id}/report/photos/${photoId}`, token, { method: 'DELETE' }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['report', task.id] }),
   })
   const decision = useMutation({
@@ -722,7 +766,8 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
     },
   })
   const retryChat = useMutation({
-    mutationFn: (mode: 'retry' | 'recover') => api(`/tasks/${task.id}/chat/${mode}`, token, { method: 'POST' }),
+    mutationFn: (mode: 'retry' | 'recover') =>
+      api(`/tasks/${task.id}/chat/${mode}`, token, { method: 'POST' }),
     onSuccess: refresh,
   })
   const retryMember = useMutation({
@@ -748,7 +793,8 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
     },
   })
   const removeMember = useMutation({
-    mutationFn: (userId: string) => api(`/tasks/${task.id}/members/${userId}`, token, { method: 'DELETE' }),
+    mutationFn: (userId: string) =>
+      api(`/tasks/${task.id}/members/${userId}`, token, { method: 'DELETE' }),
     onSuccess: refresh,
   })
   const changeLeader = useMutation({
@@ -789,7 +835,8 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
     },
   })
   const removeChecklist = useMutation({
-    mutationFn: (itemId: string) => api(`/tasks/${task.id}/checklist/${itemId}`, token, { method: 'DELETE' }),
+    mutationFn: (itemId: string) =>
+      api(`/tasks/${task.id}/checklist/${itemId}`, token, { method: 'DELETE' }),
     onSuccess: refresh,
   })
   const cancelTask = useMutation({
@@ -839,12 +886,17 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
             <Status value={detail.data.status} />
             <span>Due {due(detail.data.deadline)}</span>
           </div>
-          <p className="task-description">{detail.data.description || 'No task description was provided.'}</p>
+          <p className="task-description">
+            {detail.data.description || 'No task description was provided.'}
+          </p>
 
           <section className="sheet-section">
             <div className="section-heading">
               <h3>Checklist</h3>
-              <span>{detail.data.checklist.filter((item) => item.is_completed).length}/{detail.data.checklist.length}</span>
+              <span>
+                {detail.data.checklist.filter((item) => item.is_completed).length}/
+                {detail.data.checklist.length}
+              </span>
             </div>
             {detail.data.checklist.map((item) => (
               <div className="check-row" key={item.id}>
@@ -853,24 +905,44 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
                   disabled={!openTask || check.isPending}
                   onClick={() => check.mutate(item)}
                 >
-                  <span>{item.is_completed ? '✓' : ''}</span>{item.title}
+                  <span>{item.is_completed ? '✓' : ''}</span>
+                  {item.title}
                 </button>
                 {manager && openTask && (
-                  <button className="tiny-danger" onClick={() => removeChecklist.mutate(item.id)} aria-label="Remove item">×</button>
+                  <button
+                    className="tiny-danger"
+                    onClick={() => removeChecklist.mutate(item.id)}
+                    aria-label="Remove item"
+                  >
+                    ×
+                  </button>
                 )}
               </div>
             ))}
             {detail.data.checklist.length === 0 && <p className="muted">No checklist items.</p>}
             {manager && openTask && (
               <div className="inline-form">
-                <input value={newChecklist} onChange={(e) => setNewChecklist(e.target.value)} placeholder="New checklist item" />
-                <button className="secondary" disabled={!newChecklist.trim() || addChecklist.isPending} onClick={() => addChecklist.mutate()}>Add</button>
+                <input
+                  value={newChecklist}
+                  onChange={(event) => setNewChecklist(event.target.value)}
+                  placeholder="New checklist item"
+                />
+                <button
+                  className="secondary"
+                  disabled={!newChecklist.trim() || addChecklist.isPending}
+                  onClick={() => addChecklist.mutate()}
+                >
+                  Add
+                </button>
               </div>
             )}
           </section>
 
           <section className="sheet-section">
-            <div className="section-heading"><h3>Team</h3><span>{detail.data.members.length}</span></div>
+            <div className="section-heading">
+              <h3>Team</h3>
+              <span>{detail.data.members.length}</span>
+            </div>
             <div className="member-list">
               {detail.data.members.map((member) => (
                 <div className="member-row" key={member.user.id}>
@@ -881,9 +953,18 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
                       {member.user.telegram_username ? ` · @${member.user.telegram_username}` : ''}
                     </small>
                   </div>
-                  {manager && openTask && task.kind === 'group' && !member.is_creator && !member.is_leader && (
-                    <button className="tiny-danger" onClick={() => removeMember.mutate(member.user.id)}>Remove</button>
-                  )}
+                  {manager &&
+                    openTask &&
+                    task.kind === 'group' &&
+                    !member.is_creator &&
+                    !member.is_leader && (
+                      <button
+                        className="tiny-danger"
+                        onClick={() => removeMember.mutate(member.user.id)}
+                      >
+                        Remove
+                      </button>
+                    )}
                 </div>
               ))}
             </div>
@@ -893,22 +974,39 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
                   Leader
                   <select
                     value={detail.data.leader_id ?? ''}
-                    onChange={(event) => event.target.value && changeLeader.mutate(event.target.value)}
+                    onChange={(event) =>
+                      event.target.value && changeLeader.mutate(event.target.value)
+                    }
                   >
                     <option value="">Choose leader</option>
-                    {detail.data.members.filter((member) => !member.is_creator).map((member) => (
-                      <option value={member.user.id} key={member.user.id}>{personName(member.user)}</option>
-                    ))}
+                    {detail.data.members
+                      .filter((member) => !member.is_creator)
+                      .map((member) => (
+                        <option value={member.user.id} key={member.user.id}>
+                          {personName(member.user)}
+                        </option>
+                      ))}
                   </select>
                 </label>
                 <label>
                   Add member
-                  <input value={memberQuery} onChange={(e) => setMemberQuery(e.target.value)} placeholder="Name or @username" />
+                  <input
+                    value={memberQuery}
+                    onChange={(event) => setMemberQuery(event.target.value)}
+                    placeholder="Name or @username"
+                  />
                 </label>
                 {people.data
-                  ?.filter((person) => !detail.data.members.some((member) => member.user.id === person.id))
+                  ?.filter(
+                    (person) =>
+                      !detail.data.members.some((member) => member.user.id === person.id),
+                  )
                   .map((person) => (
-                    <button className="person-result" key={person.id} onClick={() => addMember.mutate(person.id)}>
+                    <button
+                      className="person-result"
+                      key={person.id}
+                      onClick={() => addMember.mutate(person.id)}
+                    >
                       <strong>{personName(person)}</strong>
                       <span>Add</span>
                     </button>
@@ -919,7 +1017,10 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
 
           {task.kind === 'group' && (
             <section className="sheet-section">
-              <div className="section-heading"><h3>Working group</h3>{chat.data && <Status value={chat.data.status} />}</div>
+              <div className="section-heading">
+                <h3>Working group</h3>
+                {chat.data && <Status value={chat.data.status} />}
+              </div>
               {chat.isLoading && <p className="muted">Checking Telegram group…</p>}
               {chat.error && <p className="form-error">{chat.error.message}</p>}
               {chat.data?.last_error && <p className="form-error">{chat.data.last_error}</p>}
@@ -927,15 +1028,29 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
                 <div className="chat-member" key={member.user.id}>
                   <div>
                     <strong>{personName(member.user)}</strong>
-                    <small>{member.state.replaceAll('_', ' ')}{member.last_error ? ` · ${member.last_error}` : ''}</small>
+                    <small>
+                      {member.state.replaceAll('_', ' ')}
+                      {member.last_error ? ` · ${member.last_error}` : ''}
+                    </small>
                   </div>
-                  {manager && member.state !== 'joined' && member.state !== 'removed' && chat.data?.status === 'ready' && (
-                    <button className="secondary" disabled={retryMember.isPending} onClick={() => retryMember.mutate(member.user.id)}>Retry invite</button>
-                  )}
+                  {manager &&
+                    member.state !== 'joined' &&
+                    member.state !== 'removed' &&
+                    chat.data?.status === 'ready' && (
+                      <button
+                        className="secondary"
+                        disabled={retryMember.isPending}
+                        onClick={() => retryMember.mutate(member.user.id)}
+                      >
+                        Retry invite
+                      </button>
+                    )}
                 </div>
               ))}
               <div className="action-row">
-                {chat.data?.telegram_chat_id && <button className="secondary" onClick={openChat}>Open chat</button>}
+                {chat.data?.telegram_chat_id && (
+                  <button className="secondary" onClick={openChat}>Open chat</button>
+                )}
                 {manager && chat.data && ['failed', 'degraded'].includes(chat.data.status) && (
                   <button
                     className="secondary"
@@ -958,18 +1073,30 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
               {reportState.data?.status === 'returned' && reportState.data.approval_comment && (
                 <p className="rework-note">Returned: {reportState.data.approval_comment}</p>
               )}
-              <p className="muted">Add photos before final submission. JPEG, PNG or WebP; max 10 MB each.</p>
+              <p className="muted">
+                Add photos before final submission. JPEG, PNG or WebP; max 10 MB each.
+              </p>
               <div className="photo-grid">
                 {reportState.data?.photos.map((item) => (
                   <div className="photo-card" key={item.id}>
                     {item.preview_url ? (
-                      <a href={item.original_url ?? item.preview_url} target="_blank" rel="noreferrer">
+                      <a
+                        href={item.original_url ?? item.preview_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
                         <img src={item.preview_url} alt="Report attachment" />
                       </a>
                     ) : (
                       <div className="photo-placeholder">Image</div>
                     )}
-                    <button className="tiny-danger" disabled={deletePhoto.isPending} onClick={() => deletePhoto.mutate(item.id)}>Remove</button>
+                    <button
+                      className="tiny-danger"
+                      disabled={deletePhoto.isPending}
+                      onClick={() => deletePhoto.mutate(item.id)}
+                    >
+                      Remove
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1000,10 +1127,18 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
               <form onSubmit={handleSubmit((data) => submit.mutate(data))}>
                 <label>
                   Comment
-                  <textarea {...register('comment')} rows={3} placeholder="What was completed? Anything to note?" />
+                  <textarea
+                    {...register('comment')}
+                    rows={3}
+                    placeholder="What was completed? Anything to note?"
+                  />
                 </label>
                 <button className="primary" disabled={submit.isPending}>
-                  {submit.isPending ? 'Submitting…' : detail.data.status === 'returned' ? 'Resubmit' : 'Submit report'}
+                  {submit.isPending
+                    ? 'Submitting…'
+                    : detail.data.status === 'returned'
+                      ? 'Resubmit'
+                      : 'Submit report'}
                 </button>
               </form>
             </section>
@@ -1013,18 +1148,40 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
             <section className="sheet-section leader-decision">
               <h3>Leader review</h3>
               <p className="muted">Review the comment and attachments before closing the task.</p>
-              {reportState.data?.comment && <p className="report-comment">{reportState.data.comment}</p>}
+              {reportState.data?.comment && (
+                <p className="report-comment">{reportState.data.comment}</p>
+              )}
               <div className="photo-grid">
                 {reportState.data?.photos.map((item) => (
-                  <a className="photo-card" key={item.id} href={item.original_url ?? item.preview_url ?? '#'} target="_blank" rel="noreferrer">
-                    {item.preview_url ? <img src={item.preview_url} alt="Report attachment" /> : <div className="photo-placeholder">Image</div>}
+                  <a
+                    className="photo-card"
+                    key={item.id}
+                    href={item.original_url ?? item.preview_url ?? '#'}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {item.preview_url ? (
+                      <img src={item.preview_url} alt="Report attachment" />
+                    ) : (
+                      <div className="photo-placeholder">Image</div>
+                    )}
                   </a>
                 ))}
               </div>
-              <button className="primary" disabled={decision.isPending} onClick={() => decision.mutate({ approved: true })}>Approve and complete</button>
+              <button
+                className="primary"
+                disabled={decision.isPending}
+                onClick={() => decision.mutate({ approved: true })}
+              >
+                Approve and complete
+              </button>
               <label>
                 Return reason
-                <textarea value={reworkReason} onChange={(event) => setReworkReason(event.target.value)} rows={3} />
+                <textarea
+                  value={reworkReason}
+                  onChange={(event) => setReworkReason(event.target.value)}
+                  rows={3}
+                />
               </label>
               <button
                 className="secondary danger"
@@ -1039,9 +1196,14 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
           {!openTask && reportState.data && (
             <section className="sheet-section">
               <h3>Report</h3>
-              <div className="task-meta"><Status value={reportState.data.status} /><span>{reportState.data.photos.length} photos</span></div>
+              <div className="task-meta">
+                <Status value={reportState.data.status} />
+                <span>{reportState.data.photos.length} photos</span>
+              </div>
               <p className="report-comment">{reportState.data.comment || 'No comment.'}</p>
-              {reportState.data.approval_comment && <p className="rework-note">Review: {reportState.data.approval_comment}</p>}
+              {reportState.data.approval_comment && (
+                <p className="rework-note">Review: {reportState.data.approval_comment}</p>
+              )}
             </section>
           )}
 
@@ -1050,15 +1212,23 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
               <h3>Manage task</h3>
               <label>
                 Title
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+                <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
               </label>
               <label>
                 Description
-                <textarea rows={3} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+                <textarea
+                  rows={3}
+                  value={editDescription}
+                  onChange={(event) => setEditDescription(event.target.value)}
+                />
               </label>
               <label>
                 Deadline
-                <input type="datetime-local" value={editDeadline} onChange={(e) => setEditDeadline(e.target.value)} />
+                <input
+                  type="datetime-local"
+                  value={editDeadline}
+                  onChange={(event) => setEditDeadline(event.target.value)}
+                />
               </label>
               <div className="action-row">
                 <button
@@ -1080,7 +1250,9 @@ function TaskSheet({ task, user, token, close }: { task: Task; user: User; token
           )}
 
           {notice && <p className="notice" role="status">{notice}</p>}
-          {errors.map((error, index) => <p className="form-error" key={`${error.message}-${index}`}>{error.message}</p>)}
+          {errors.map((error, index) => (
+            <p className="form-error" key={`${error.message}-${index}`}>{error.message}</p>
+          ))}
         </>
       )}
     </section>
@@ -1113,7 +1285,13 @@ function App() {
 
   if (session.isLoading) return <main className="centered">Opening your board…</main>
   if (session.error) {
-    return <main className="gate"><span className="mark">SS</span><h1>SS Board</h1><p>{session.error.message}</p></main>
+    return (
+      <main className="gate">
+        <span className="mark">SS</span>
+        <h1>SS Board</h1>
+        <p>{session.error.message}</p>
+      </main>
+    )
   }
   if (!user) return <main className="centered">Session unavailable.</main>
 
@@ -1127,11 +1305,16 @@ function App() {
       <header>
         <div className="brand">
           <span className="mark">SS</span>
-          <div><span className="eyebrow">Operations board</span><h1>My work</h1></div>
+          <div>
+            <span className="eyebrow">Operations board</span>
+            <h1>My work</h1>
+          </div>
         </div>
         <div className="profile">
           <strong>{user.full_name || 'Telegram user'}</strong>
-          <span>{user.telegram_username ? `@${user.telegram_username}` : user.role.replaceAll('_', ' ')}</span>
+          <span>
+            {user.telegram_username ? `@${user.telegram_username}` : user.role.replaceAll('_', ' ')}
+          </span>
         </div>
       </header>
 
@@ -1143,9 +1326,17 @@ function App() {
 
       {manager && (
         <div className="manager-actions">
-          <button className="new-task" onClick={() => setTaskComposerOpen(true)}><span>+</span> New task</button>
-          <button className="secondary manager-action" onClick={() => setEventComposerOpen(true)}>New event</button>
-          {user.role === 'admin' && <button className="secondary manager-action" onClick={() => setAdminOpen(true)}>People</button>}
+          <button className="new-task" onClick={() => setTaskComposerOpen(true)}>
+            <span>+</span> New task
+          </button>
+          <button className="secondary manager-action" onClick={() => setEventComposerOpen(true)}>
+            New event
+          </button>
+          {user.role === 'admin' && (
+            <button className="secondary manager-action" onClick={() => setAdminOpen(true)}>
+              People
+            </button>
+          )}
         </div>
       )}
 
@@ -1182,27 +1373,56 @@ function App() {
       )}
 
       {taskComposerOpen && (
-        <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setTaskComposerOpen(false)}>
-          <TaskComposer user={user} token={token} events={events.data ?? []} close={() => setTaskComposerOpen(false)} />
+        <div
+          className="sheet-backdrop"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && setTaskComposerOpen(false)
+          }
+        >
+          <TaskComposer
+            user={user}
+            token={token}
+            events={events.data ?? []}
+            close={() => setTaskComposerOpen(false)}
+          />
         </div>
       )}
       {eventComposerOpen && (
-        <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEventComposerOpen(false)}>
+        <div
+          className="sheet-backdrop"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && setEventComposerOpen(false)
+          }
+        >
           <EventComposer token={token} close={() => setEventComposerOpen(false)} />
         </div>
       )}
       {selected && (
-        <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}>
+        <div
+          className="sheet-backdrop"
+          onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}
+        >
           <TaskSheet task={selected} user={user} token={token} close={() => setSelected(null)} />
         </div>
       )}
       {selectedEvent && (
-        <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelectedEvent(null)}>
-          <ArchiveSheet event={selectedEvent} user={user} token={token} close={() => setSelectedEvent(null)} />
+        <div
+          className="sheet-backdrop"
+          onMouseDown={(event) => event.target === event.currentTarget && setSelectedEvent(null)}
+        >
+          <ArchiveSheet
+            event={selectedEvent}
+            user={user}
+            token={token}
+            close={() => setSelectedEvent(null)}
+          />
         </div>
       )}
       {adminOpen && (
-        <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setAdminOpen(false)}>
+        <div
+          className="sheet-backdrop"
+          onMouseDown={(event) => event.target === event.currentTarget && setAdminOpen(false)}
+        >
           <AdminSheet token={token} close={() => setAdminOpen(false)} />
         </div>
       )}
