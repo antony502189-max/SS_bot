@@ -2,7 +2,7 @@
 
 Updated: 2026-08-26
 
-The product is now bot-only from the user's point of view. The FastAPI service remains the business/backend layer, but users do not need a Telegram Mini App. All required day-to-day workflows are exposed through bot messages, reply keyboards, and inline buttons.
+The product is bot-only from the user's point of view. The FastAPI service remains the business/backend layer, but users do not need a Telegram Mini App. All required day-to-day workflows are exposed through bot messages, reply keyboards, and inline buttons.
 
 ## Coverage audit
 
@@ -10,7 +10,7 @@ The product is now bot-only from the user's point of view. The FastAPI service r
 | --- | --- | --- |
 | Foundation | Implemented | Docker, API, bot, worker, Alembic, PostgreSQL/Redis/S3 configuration, CI, Caddy, readiness checks, and structured logs exist. |
 | Registration | Implemented | `/start`, full-name capture, Telegram ID, username synchronization/readiness, role-aware bot menu. |
-| Roles/users | Implemented in bot | Administrator user list/card, role changes, activation/deactivation. Sector assignment/sector CRUD remain backend-supported and can be expanded in bot if required by operations. |
+| Roles/users | Implemented in bot | Administrator user list/card, role changes, activation/deactivation. Sector assignment/sector CRUD remain backend-supported and are the next administration enhancement if operational sector management is required entirely through the bot. |
 | Search | Implemented | Full-name and `@username` search is used directly by bot task/event workflows. |
 | Events | Implemented in bot | Event creation, participant selection, event cards, archive view, PDF/ZIP delivery, and retention extension. |
 | Tasks | Implemented in bot | Task filters/cards, individual/group creation, event link, assignee selection, leader selection, deadline, description, checklist, editing, member changes, leader replacement, checklist management, and cancellation. |
@@ -18,8 +18,8 @@ The product is now bot-only from the user's point of view. The FastAPI service r
 | Working groups | Implemented | Durable task-chat creation, MTProto service account, bot promotion, direct invite, personal-link fallback, 30-minute reminders, join reconciliation, retry/recovery, member removal, and cleanup. Bot exposes group state and retry actions. |
 | Notifications/deadlines | Implemented | Assignment/update/completion notifications, 24-hour deadline reminders, overdue transition, durable retries. |
 | Archive/retention | Implemented | Event archive, PDF/ZIP, one-year retention, 30-day warning, extension, purge workflow. |
-| Mini App | Removed from active product | It is not part of Docker runtime, production routing, or CI acceptance. Source may remain dormant for possible future reuse. |
-| Production hardening | Implemented in code / live proof required | Webhook mode, TLS edge, health/readiness, retry logic, runbook, and CI exist. Real Telegram/S3/PostgreSQL staging acceptance, backups, monitoring, and alert ownership remain deployment operations. |
+| Mini App | Removed | Source, Docker runtime, production route, Node build, and CI job have been removed. User-facing work belongs in the bot. |
+| Production hardening | Implemented in code / live proof required | Webhook mode, TLS edge, health/readiness, retry logic, runbook, PostgreSQL migration validation, and CI exist. Real Telegram/S3 staging acceptance, backups, monitoring, and alert ownership remain deployment operations. |
 
 ## Current order to finish rollout
 
