@@ -133,6 +133,7 @@ class TaskCreate(BaseModel):
     description: str | None = Field(default=None, max_length=5000)
     kind: TaskKind = TaskKind.INDIVIDUAL
     deadline: datetime
+    cleanup_at: datetime | None = None
     event_id: uuid.UUID | None = None
     sector_id: uuid.UUID | None = None
     leader_id: uuid.UUID | None = None

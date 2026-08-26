@@ -7,10 +7,18 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ChatMemberUpdated, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery,
+    ChatMemberUpdated,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from apps.api.app.config import get_settings
 from apps.api.app.db import SessionLocal
@@ -20,6 +28,7 @@ from apps.api.app.models import (
     Task,
     TaskChat,
     TaskChatMember,
+    TaskKind,
     TaskMember,
     TaskStatus,
     User,
@@ -37,8 +46,10 @@ class Registration(StatesGroup):
 
 class TaskIssue(StatesGroup):
     title = State()
-    assignee = State()
+    kind = State()
+    people = State()
     deadline = State()
+    cleanup = State()
 
 
 class AdminGrant(StatesGroup):
@@ -225,27 +236,111 @@ async def issue_task_title(message: Message, state: FSMContext) -> None:
         await message.answer("Название должно содержать от 2 до 200 символов. Повторите ввод.")
         return
     await state.update_data(title=title)
-    await state.set_state(TaskIssue.assignee)
-    await message.answer("Введите @username исполнителя. Он должен уже зарегистрироваться в боте.")
+    await state.set_state(TaskIssue.kind)
+    await message.answer(
+        "Выберите тип задачи.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👤 Личная", callback_data="issue:kind:individual"),
+            InlineKeyboardButton(text="👥 Групповая", callback_data="issue:kind:group"),
+        ]]),
+    )
 
 
-@router.message(TaskIssue.assignee, F.text)
-async def issue_task_assignee(message: Message, state: FSMContext) -> None:
-    username = message.text.strip().lstrip("@")
-    async with SessionLocal() as session:
-        assignee = await session.scalar(select(User).where(User.telegram_username == username))
-    if not assignee or assignee.status != UserStatus.ACTIVE:
-        await message.answer("Активный пользователь с таким @username не найден. Повторите ввод.")
+@router.callback_query(TaskIssue.kind, F.data.startswith("issue:kind:"))
+async def issue_task_kind(callback: CallbackQuery, state: FSMContext) -> None:
+    kind = callback.data.rsplit(":", 1)[-1]
+    await state.update_data(kind=kind, member_ids=[])
+    await state.set_state(TaskIssue.people)
+    await callback.answer()
+    await callback.message.answer(
+        "Введите часть имени или @username. Результаты появятся кнопками."
+    )
+
+
+def people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        label = user.full_name or f"@{user.telegram_username or ''}"
+        prefix = "✅" if str(user.id) in selected else "➕"
+        rows.append(
+            [InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"issue:person:{user.id}")]
+        )
+    rows.append(
+        [InlineKeyboardButton(text=f"Готово ({len(selected)})", callback_data="issue:people:done")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(TaskIssue.people, F.text)
+async def issue_task_people(message: Message, state: FSMContext) -> None:
+    query = message.text.strip().lstrip("@")
+    if len(query) < 2:
+        await message.answer("Введите минимум две буквы имени или username.")
         return
-    await state.update_data(assignee_id=str(assignee.id))
+    data = await state.get_data()
+    async with SessionLocal() as session:
+        statement = (
+            select(User)
+            .where(
+                User.status == UserStatus.ACTIVE,
+                or_(
+                    User.telegram_username.ilike(f"%{query}%"),
+                    User.normalized_full_name.ilike(f"%{normalize_full_name(query)}%"),
+                ),
+            )
+            .order_by(User.full_name)
+            .limit(8)
+        )
+        users = list((await session.scalars(statement)).all())
+    if not users:
+        await message.answer("Никого не нашёл. Измените запрос.")
+        return
+    await message.answer(
+        "Выберите людей:", reply_markup=people_keyboard(users, set(data["member_ids"]))
+    )
+
+
+@router.callback_query(TaskIssue.people, F.data.startswith("issue:person:"))
+async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
+    person_id = callback.data.rsplit(":", 1)[-1]
+    data = await state.get_data()
+    selected = set(data["member_ids"])
+    selected.symmetric_difference_update({person_id})
+    await state.update_data(member_ids=list(selected))
+    await callback.answer("Добавлен" if person_id in selected else "Убран")
+
+
+@router.callback_query(TaskIssue.people, F.data == "issue:people:done")
+async def issue_task_people_done(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    count = len(data["member_ids"])
+    if not count or (data["kind"] == "individual" and count != 1):
+        await callback.answer(
+            "Для личной задачи выберите одного, для групповой — одного или больше.",
+            show_alert=True,
+        )
+        return
     await state.set_state(TaskIssue.deadline)
-    await message.answer("Введите срок в формате ДД.ММ.ГГГГ ЧЧ:ММ, например 31.12.2026 18:00.")
+    await callback.message.answer("Введите срок задачи: ДД.ММ.ГГГГ ЧЧ:ММ.")
+    await callback.answer()
 
 
 @router.message(TaskIssue.deadline, F.text)
 async def issue_task_deadline(message: Message, state: FSMContext) -> None:
     try:
         deadline = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
+    except ValueError:
+        await message.answer("Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ.")
+        return
+    await state.update_data(deadline=deadline.isoformat())
+    await state.set_state(TaskIssue.cleanup)
+    await message.answer("Введите время удаления рабочей группы: ДД.ММ.ГГГГ ЧЧ:ММ.")
+
+
+@router.message(TaskIssue.cleanup, F.text)
+async def issue_task_cleanup(message: Message, state: FSMContext) -> None:
+    try:
+        cleanup_at = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
     except ValueError:
         await message.answer("Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ.")
         return
@@ -260,8 +355,11 @@ async def issue_task_deadline(message: Message, state: FSMContext) -> None:
                 db_actor,
                 TaskCreate(
                     title=data["title"],
-                    deadline=deadline,
-                    member_ids=[uuid.UUID(data["assignee_id"])],
+                    deadline=datetime.fromisoformat(data["deadline"]),
+                    cleanup_at=cleanup_at if data["kind"] == "group" else None,
+                    kind=TaskKind(data["kind"]),
+                    leader_id=actor.id if data["kind"] == "group" else None,
+                    member_ids=[uuid.UUID(value) for value in data["member_ids"]],
                 ),
                 str(uuid.uuid4()),
             )
@@ -272,7 +370,7 @@ async def issue_task_deadline(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(
-        f"Задача «{task.title}» создана. Исполнитель увидит её в разделе «Мои задачи».",
+        f"Задача «{task.title}» создана. Исполнители увидят её в разделе «Мои задачи».",
         reply_markup=menu_keyboard,
     )
 

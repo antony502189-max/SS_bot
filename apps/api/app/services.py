@@ -139,6 +139,8 @@ async def create_task(
     ensure_sector_access(actor, payload.sector_id)
     if payload.deadline <= utc_now():
         raise HTTPException(status_code=422, detail="Deadline must be in the future")
+    if payload.cleanup_at and payload.cleanup_at <= utc_now():
+        raise HTTPException(status_code=422, detail="Chat cleanup time must be in the future")
     member_ids = set(payload.member_ids)
     member_ids.add(actor.id)
     if payload.leader_id:
@@ -158,6 +160,7 @@ async def create_task(
         description=payload.description,
         kind=payload.kind,
         deadline=payload.deadline,
+        cleanup_at=payload.cleanup_at,
         event_id=payload.event_id,
         sector_id=payload.sector_id,
         creator_id=actor.id,
