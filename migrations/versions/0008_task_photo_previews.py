@@ -1,7 +1,6 @@
 """Store validated photo dimensions and preview locations."""
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0008_task_photo_previews"
