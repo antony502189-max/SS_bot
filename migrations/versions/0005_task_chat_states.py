@@ -15,8 +15,8 @@ depends_on = None
 
 def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
-        op.execute("ALTER TYPE chatstatus ADD VALUE IF NOT EXISTS 'creating'")
-        op.execute("ALTER TYPE chatstatus ADD VALUE IF NOT EXISTS 'degraded'")
+        op.execute("ALTER TYPE chatstatus ADD VALUE IF NOT EXISTS 'CREATING'")
+        op.execute("ALTER TYPE chatstatus ADD VALUE IF NOT EXISTS 'DEGRADED'")
 
 
 def downgrade() -> None:
