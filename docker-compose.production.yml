@@ -1,8 +1,6 @@
 services:
   api:
     ports: []
-  miniapp:
-    ports: []
   bot:
     ports: []
   caddy:
@@ -22,8 +20,6 @@ services:
       api:
         condition: service_started
       bot:
-        condition: service_started
-      miniapp:
         condition: service_started
 
 volumes:
