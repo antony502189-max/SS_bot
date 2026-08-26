@@ -7,6 +7,22 @@ from telethon.tl.types import ChatAdminRights, ChatBannedRights
 
 from apps.api.app.config import get_settings
 
+BOT_API_CHANNEL_OFFSET = 10**12
+
+
+def to_bot_api_chat_id(channel_id: int) -> int:
+    """Return the Bot API canonical -100... identifier for a supergroup/channel."""
+    if channel_id <= -BOT_API_CHANNEL_OFFSET:
+        return channel_id
+    return -(BOT_API_CHANNEL_OFFSET + abs(channel_id))
+
+
+def legacy_mtproto_channel_id(bot_api_chat_id: int) -> int:
+    """Return the positive MTProto channel id, useful for legacy DB reconciliation."""
+    if bot_api_chat_id <= -BOT_API_CHANNEL_OFFSET:
+        return abs(bot_api_chat_id) - BOT_API_CHANNEL_OFFSET
+    return abs(bot_api_chat_id)
+
 
 class TelegramResultKind(StrEnum):
     SUCCESS = "success"
@@ -35,7 +51,9 @@ def classify_error(exc: Exception) -> TelegramResult:
         return TelegramResult(TelegramResultKind.NOT_JOINED, error=type(exc).__name__)
     if isinstance(exc, errors.FloodWaitError):
         return TelegramResult(
-            TelegramResultKind.FLOOD_WAIT, retry_after_seconds=exc.seconds, error=type(exc).__name__
+            TelegramResultKind.FLOOD_WAIT,
+            retry_after_seconds=exc.seconds,
+            error=type(exc).__name__,
         )
     if isinstance(exc, (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError)):
         return TelegramResult(TelegramResultKind.PRIVACY_RESTRICTED, error=type(exc).__name__)
@@ -80,7 +98,10 @@ class TelegramUserService:
                 functions.channels.CreateChannelRequest(title=title, about=about, megagroup=True)
             )
             channel = next(chat for chat in result.chats if getattr(chat, "megagroup", False))
-            return TelegramResult(TelegramResultKind.SUCCESS, value=channel.id)
+            return TelegramResult(
+                TelegramResultKind.SUCCESS,
+                value=to_bot_api_chat_id(int(channel.id)),
+            )
         except Exception as exc:
             return classify_error(exc)
 
@@ -90,15 +111,13 @@ class TelegramUserService:
         try:
             channel = await self.client.get_input_entity(chat_id)
             user = await self.client.get_input_entity(f"@{username.lstrip('@')}")
-            await self.client(
-                functions.channels.InviteToChannelRequest(channel=channel, users=[user])
-            )
+            await self.client(functions.channels.InviteToChannelRequest(channel=channel, users=[user]))
             return TelegramResult(TelegramResultKind.SUCCESS)
         except Exception as exc:
             return classify_error(exc)
 
     async def add_bot(self, chat_id: int, bot_username: str) -> TelegramResult:
-        """Add the bot and make it a no-operational-rights admin for chat-member updates."""
+        """Add the bot and promote it so Bot API chat-member updates are delivered."""
         if not bot_username:
             return TelegramResult(
                 TelegramResultKind.USERNAME_NOT_FOUND, error="TELEGRAM_BOT_USERNAME missing"
@@ -122,7 +141,6 @@ class TelegramUserService:
             return classify_error(exc)
 
     async def is_user_in_chat(self, chat_id: int, username: str | None) -> TelegramResult:
-        """Check membership through MTProto; a missing username cannot be resolved safely."""
         if not username:
             return TelegramResult(TelegramResultKind.USERNAME_NOT_FOUND)
         try:
@@ -142,8 +160,8 @@ class TelegramUserService:
             channel = await self.client.get_input_entity(chat_id)
             message = await self.client.send_message(
                 channel,
-                f"Task: {title}\nDeadline: {deadline.astimezone(UTC).isoformat()}\n\n"
-                f"{description or 'No description provided.'}",
+                f"Задача: {title}\nСрок: {deadline.astimezone(UTC).isoformat()}\n\n"
+                f"{description or 'Описание не указано.'}",
             )
             await self.client.pin_message(channel, message, notify=False)
             return TelegramResult(TelegramResultKind.SUCCESS, value=message.id)
@@ -151,6 +169,7 @@ class TelegramUserService:
             return classify_error(exc)
 
     async def remove_user(self, chat_id: int, username: str | None) -> TelegramResult:
+        """Kick a member, then immediately clear the ban so a later re-assignment can work."""
         if not username:
             return TelegramResult(TelegramResultKind.USERNAME_NOT_FOUND)
         try:
@@ -161,6 +180,13 @@ class TelegramUserService:
                     channel=channel,
                     participant=user,
                     banned_rights=ChatBannedRights(until_date=None, view_messages=True),
+                )
+            )
+            await self.client(
+                functions.channels.EditBannedRequest(
+                    channel=channel,
+                    participant=user,
+                    banned_rights=ChatBannedRights(until_date=None, view_messages=False),
                 )
             )
             return TelegramResult(TelegramResultKind.SUCCESS)
