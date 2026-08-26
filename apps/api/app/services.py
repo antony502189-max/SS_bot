@@ -36,9 +36,9 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def task_cleanup_at(completed_at: datetime, deadline: datetime) -> datetime:
-    """Three days after closure, never before the task deadline."""
-    return max(completed_at + timedelta(days=3), deadline)
+def task_cleanup_at(closed_at: datetime, deadline: datetime) -> datetime:
+    """Delete a disposable task chat three days after the later of closure and deadline."""
+    return max(closed_at, deadline) + timedelta(days=3)
 
 
 async def refresh_event_retention(session: AsyncSession, event_id: uuid.UUID | None) -> None:
@@ -107,14 +107,19 @@ def ensure_sector_access(actor: User, sector_id: uuid.UUID | None) -> None:
 
 
 async def create_event(session: AsyncSession, actor: User, payload: EventCreate) -> Event:
-    ensure_sector_access(actor, payload.sector_id)
+    sector_id = payload.sector_id
+    if actor.role == Role.SECTOR_HEAD and sector_id is None:
+        sector_id = actor.sector_id
+    ensure_sector_access(actor, sector_id)
+    if payload.ends_at and payload.ends_at < payload.starts_at:
+        raise HTTPException(status_code=422, detail="Event end cannot be before its start")
     event = Event(
         title=payload.title.strip(),
         description=payload.description,
         starts_at=payload.starts_at,
         ends_at=payload.ends_at,
         budget=payload.budget,
-        sector_id=payload.sector_id,
+        sector_id=sector_id,
         created_by_id=actor.id,
     )
     session.add(event)
@@ -135,34 +140,55 @@ async def create_task(
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
     existing = await session.scalar(select(Task).where(Task.idempotency_key == idempotency_key))
     if existing:
+        if existing.creator_id != actor.id:
+            raise HTTPException(status_code=409, detail="Idempotency key is already in use")
         return existing, True
-    ensure_sector_access(actor, payload.sector_id)
+
+    task_sector_id = payload.sector_id
+    if payload.event_id:
+        event = await session.get(Event, payload.event_id)
+        if not event or event.purged_at:
+            raise HTTPException(status_code=422, detail="Task event is not available")
+        if task_sector_id is None:
+            task_sector_id = event.sector_id
+        elif event.sector_id is not None and task_sector_id != event.sector_id:
+            raise HTTPException(status_code=422, detail="Task sector must match the event sector")
+    if actor.role == Role.SECTOR_HEAD and task_sector_id is None:
+        task_sector_id = actor.sector_id
+    ensure_sector_access(actor, task_sector_id)
+
     if payload.deadline <= utc_now():
         raise HTTPException(status_code=422, detail="Deadline must be in the future")
-    if payload.cleanup_at and payload.cleanup_at <= utc_now():
-        raise HTTPException(status_code=422, detail="Chat cleanup time must be in the future")
-    member_ids = set(payload.member_ids)
+
+    selected_member_ids = set(payload.member_ids)
+    if payload.kind.value == "group":
+        if not payload.leader_id:
+            raise HTTPException(status_code=422, detail="A group task requires a leader")
+        if payload.leader_id not in selected_member_ids:
+            raise HTTPException(status_code=422, detail="Group leader must be a selected assignee")
+    elif payload.leader_id:
+        raise HTTPException(status_code=422, detail="Individual tasks cannot have a group leader")
+
+    member_ids = set(selected_member_ids)
     member_ids.add(actor.id)
-    if payload.leader_id:
-        member_ids.add(payload.leader_id)
-    if payload.kind.value == "group" and not payload.leader_id:
-        raise HTTPException(status_code=422, detail="A group task requires a leader")
     if payload.kind.value == "individual" and len(member_ids - {actor.id}) != 1:
         raise HTTPException(
             status_code=422, detail="An individual task requires exactly one assignee"
         )
+
     for user_id in member_ids:
         member = await require_active_user(session, user_id)
-        if actor.role == Role.SECTOR_HEAD and member.sector_id != payload.sector_id:
+        if actor.role == Role.SECTOR_HEAD and member.sector_id != task_sector_id:
             raise HTTPException(status_code=403, detail="You can assign only users in your sector")
+
     task = Task(
         title=payload.title.strip(),
         description=payload.description,
         kind=payload.kind,
         deadline=payload.deadline,
-        cleanup_at=payload.cleanup_at,
+        cleanup_at=None,
         event_id=payload.event_id,
-        sector_id=payload.sector_id,
+        sector_id=task_sector_id,
         creator_id=actor.id,
         leader_id=payload.leader_id,
         idempotency_key=idempotency_key,
