@@ -51,4 +51,6 @@ jobs:
           asyncio.run(main())
           PY
       - name: Validate Docker Compose configuration
+        env:
+          ENV_FILE: .env.example
         run: docker compose config >/dev/null
