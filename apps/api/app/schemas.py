@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from .models import Role, TaskKind, TaskStatus, UserStatus
+from .models import ReportStatus, Role, TaskKind, TaskStatus, UserStatus
 
 
 class TelegramIdentity(BaseModel):
@@ -133,7 +133,6 @@ class TaskCreate(BaseModel):
     description: str | None = Field(default=None, max_length=5000)
     kind: TaskKind = TaskKind.INDIVIDUAL
     deadline: datetime
-    cleanup_at: datetime | None = None
     event_id: uuid.UUID | None = None
     sector_id: uuid.UUID | None = None
     leader_id: uuid.UUID | None = None
@@ -253,4 +252,20 @@ class PhotoOut(BaseModel):
     preview_object_key: str | None
     width: int | None
     height: int | None
+    original_url: str | None = None
+    preview_url: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class ReportOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    submitted_by_id: uuid.UUID
+    status: ReportStatus
+    comment: str | None
+    approval_comment: str | None
+    submitted_at: datetime
+    returned_at: datetime | None
+    approved_at: datetime | None
+    photos: list[PhotoOut] = Field(default_factory=list)
     model_config = {"from_attributes": True}
