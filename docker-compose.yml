@@ -42,7 +42,7 @@ services:
   bot:
     build: .
     env_file: ${ENV_FILE:-.env}
-    command: python -m apps.bot.app.main
+    command: python -m apps.bot.app.runner
     restart: unless-stopped
     depends_on:
       api: { condition: service_started }
