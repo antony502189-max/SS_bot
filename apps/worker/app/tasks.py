@@ -61,6 +61,28 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+_RETRYABLE_TELEGRAM_RESULTS = {
+    TelegramResultKind.FLOOD_WAIT,
+    TelegramResultKind.TEMPORARY_NETWORK_ERROR,
+}
+_MAX_OUTBOX_ATTEMPTS = 8
+
+
+class RetryableOutboxError(RuntimeError):
+    def __init__(self, message: str, delay_seconds: int = 60) -> None:
+        super().__init__(message)
+        self.delay_seconds = max(5, delay_seconds)
+
+
+def raise_if_retryable(result: TelegramResult, prefix: str) -> None:
+    if result.kind not in _RETRYABLE_TELEGRAM_RESULTS:
+        return
+    delay = result.retry_after_seconds or 60
+    raise RetryableOutboxError(
+        f"{prefix}:{result.error or result.kind.value}",
+        delay_seconds=delay,
+    )
+
 
 async def notify(telegram_id: int, text: str) -> None:
     if not settings.telegram_bot_token:
@@ -112,9 +134,9 @@ async def _send_due_notifications() -> None:
             notification.attempts += 1
             user = await session.get(User, notification.user_id)
             try:
-                if not user:
+                if not user or user.status != UserStatus.ACTIVE:
                     notification.status = "cancelled"
-                    notification.last_error = "user_not_found"
+                    notification.last_error = "active_user_not_found"
                     continue
                 await notify(user.telegram_id, notification_text(notification))
                 notification.status = "sent"
@@ -145,20 +167,29 @@ async def _process_task_deadlines() -> None:
             (
                 await session.scalars(
                     select(Task)
-                    .where(Task.status == TaskStatus.ACTIVE, Task.deadline < now)
+                    .where(
+                        Task.status.in_([TaskStatus.ACTIVE, TaskStatus.RETURNED]),
+                        Task.deadline < now,
+                    )
                     .with_for_update(skip_locked=True)
                 )
             ).all()
         )
         for task in overdue:
             task.status = TaskStatus.OVERDUE
-            await queue_task_notifications(session, task, {task.creator_id}, "TASK_OVERDUE")
+            members = {
+                member.user_id
+                for member in (
+                    await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
+                ).all()
+            }
+            await queue_task_notifications(session, task, members, "TASK_OVERDUE")
         due_soon = list(
             (
                 await session.scalars(
                     select(Task)
                     .where(
-                        Task.status == TaskStatus.ACTIVE,
+                        Task.status.in_([TaskStatus.ACTIVE, TaskStatus.RETURNED]),
                         Task.deadline >= now,
                         Task.deadline <= reminder_cutoff,
                     )
@@ -190,98 +221,63 @@ def process_task_deadlines() -> None:
     asyncio.run(_process_task_deadlines())
 
 
-async def provision_task_chat(task_id: str) -> None:
-    async with SessionLocal() as session:
-        task = await session.get(Task, uuid.UUID(task_id))
-        if not task or task.kind != TaskKind.GROUP:
-            return
-        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
-        if chat and chat.status == ChatStatus.READY:
-            return
-        if chat and chat.telegram_chat_id:
-            chat.status = ChatStatus.DEGRADED
-            chat.last_error = "existing_group_requires_recovery"
-            await session.commit()
-            return
-        if not chat:
-            chat = TaskChat(task_id=task.id, status=ChatStatus.PENDING)
-            session.add(chat)
-            await session.flush()
-        chat.status = ChatStatus.CREATING
-        try:
-            async with TelegramUserService() as telegram:
-                created = await telegram.create_supergroup(
-                    f"Задача: {task.title}", task.description or "Рабочая группа SS Bot"
-                )
-                if created.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.FAILED
-                    chat.last_error = created.error or created.kind.value
-                    await session.commit()
-                    return
-                chat.telegram_chat_id = int(created.value)
-                bot_result = await telegram.add_bot(
-                    chat.telegram_chat_id, settings.telegram_bot_username
-                )
-                if bot_result.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.DEGRADED
-                    chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
-                    await session.commit()
-                    return
-                brief = await ensure_task_brief(telegram, task, chat)
-                if brief.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.DEGRADED
-                    chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
-                    await session.commit()
-                    return
-                members = list(
-                    (
-                        await session.scalars(
-                            select(TaskMember).where(TaskMember.task_id == task.id)
-                        )
-                    ).all()
-                )
-                for member in members:
-                    await invite_task_chat_member(session, telegram, task, chat, member.user_id)
-                chat.status = ChatStatus.READY
-        except Exception as exc:
-            chat.status = ChatStatus.DEGRADED if chat.telegram_chat_id else ChatStatus.FAILED
-            chat.last_error = type(exc).__name__
-            raise
-        finally:
-            await session.commit()
+async def ensure_task_brief(
+    telegram: TelegramUserService,
+    task: Task,
+    chat: TaskChat,
+    *,
+    force: bool = False,
+) -> TelegramResult:
+    if chat.pinned_message_id and not force:
+        return TelegramResult(TelegramResultKind.SUCCESS)
+    result = await telegram.post_and_pin_task_brief(
+        chat.telegram_chat_id, task.title, task.description, task.deadline
+    )
+    if result.kind == TelegramResultKind.SUCCESS:
+        chat.pinned_message_id = int(result.value)
+    return result
 
 
 async def invite_task_chat_member(
-    session, telegram: TelegramUserService, task: Task, chat: TaskChat, user_id: uuid.UUID
+    session,
+    telegram: TelegramUserService,
+    task: Task,
+    chat: TaskChat,
+    user_id: uuid.UUID,
 ) -> None:
-    """Invite one assigned user, preserving an auditable delivery state for retries."""
+    """Invite one assigned user, preserving auditable state and retry semantics."""
     if not chat.telegram_chat_id:
         raise RuntimeError("Working group is missing its Telegram ID")
     user = await session.get(User, user_id)
+    if not user or user.status != UserStatus.ACTIVE:
+        return
     entry = await session.scalar(
         select(TaskChatMember).where(
-            TaskChatMember.task_chat_id == chat.id, TaskChatMember.user_id == user_id
+            TaskChatMember.task_chat_id == chat.id,
+            TaskChatMember.user_id == user_id,
         )
     )
     if not entry:
         entry = TaskChatMember(task_chat_id=chat.id, user_id=user_id)
         session.add(entry)
         await session.flush()
+
     if entry.invite_link:
-        await telegram.revoke_invite(chat.telegram_chat_id, entry.invite_link)
+        revoke = await telegram.revoke_invite(chat.telegram_chat_id, entry.invite_link)
+        raise_if_retryable(revoke, "revoke_invite")
     entry.invite_link = None
     entry.invite_link_created_at = None
     entry.next_reminder_at = None
     entry.last_error = None
-    direct = await telegram.invite_user(
-        chat.telegram_chat_id, user.telegram_username if user else None
-    )
+
+    direct = await telegram.invite_user(chat.telegram_chat_id, user.telegram_username)
     now = datetime.now(UTC)
     if direct.kind == TelegramResultKind.SUCCESS:
         entry.state = MembershipState.JOINED
         entry.joined_at = entry.joined_at or now
         entry.last_checked_at = now
         return
+    raise_if_retryable(direct, "direct_invite")
     if direct.kind not in {
         TelegramResultKind.PRIVACY_RESTRICTED,
         TelegramResultKind.USERNAME_NOT_FOUND,
@@ -289,7 +285,9 @@ async def invite_task_chat_member(
         entry.state = MembershipState.FAILED
         entry.last_error = direct.error or direct.kind.value
         return
+
     invite = await telegram.create_single_use_invite(chat.telegram_chat_id, f"task-{task.id}")
+    raise_if_retryable(invite, "create_invite_link")
     if invite.kind != TelegramResultKind.SUCCESS:
         entry.state = MembershipState.FAILED
         entry.last_error = invite.error or invite.kind.value
@@ -298,48 +296,86 @@ async def invite_task_chat_member(
     entry.invite_link = str(invite.value)
     entry.invite_link_created_at = now
     entry.next_reminder_at = now + timedelta(minutes=30)
-    if user:
-        await notify(user.telegram_id, f"Вступите в рабочую группу «{task.title}»: {invite.value}")
+    await notify(user.telegram_id, f"Вступите в рабочую группу «{task.title}»: {invite.value}")
 
 
-async def _process_outbox() -> None:
-    async with SessionLocal() as session:
-        events = list(
-            (
-                await session.scalars(
-                    select(OutboxEvent)
-                    .where(OutboxEvent.processed_at.is_(None))
-                    .order_by(OutboxEvent.created_at)
-                    .with_for_update(skip_locked=True)
-                    .limit(20)
-                )
-            ).all()
+async def configure_task_chat(
+    session,
+    telegram: TelegramUserService,
+    task: Task,
+    chat: TaskChat,
+) -> bool:
+    if not chat.telegram_chat_id:
+        raise RuntimeError("Working group is missing its Telegram ID")
+    bot_result = await telegram.add_bot(chat.telegram_chat_id, settings.telegram_bot_username)
+    raise_if_retryable(bot_result, "bot_add")
+    if bot_result.kind != TelegramResultKind.SUCCESS:
+        chat.status = ChatStatus.DEGRADED
+        chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
+        return False
+
+    brief = await ensure_task_brief(telegram, task, chat)
+    raise_if_retryable(brief, "task_brief")
+    if brief.kind != TelegramResultKind.SUCCESS:
+        chat.status = ChatStatus.DEGRADED
+        chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
+        return False
+
+    members = list(
+        (
+            await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
+        ).all()
+    )
+    for member in members:
+        existing = await session.scalar(
+            select(TaskChatMember).where(
+                TaskChatMember.task_chat_id == chat.id,
+                TaskChatMember.user_id == member.user_id,
+            )
         )
-        for event in events:
-            event.attempts += 1
-            try:
-                if event.event_type == "TASK_CREATED":
-                    await provision_task_chat(event.payload["task_id"])
-                elif event.event_type == "TASK_CHAT_MEMBER_INVITE_REQUESTED":
-                    await _invite_requested_task_chat_member(
-                        event.payload["task_id"], event.payload["user_id"]
-                    )
-                elif event.event_type == "TASK_CHAT_RECOVERY_REQUESTED":
-                    await _recover_task_chat(event.payload["task_id"])
-                elif event.event_type == "TASK_CHAT_MEMBER_REMOVAL_REQUESTED":
-                    await _remove_task_chat_member(
-                        event.payload["task_id"], event.payload["user_id"]
-                    )
-                event.processed_at = datetime.now(UTC)
-                event.last_error = None
-            except Exception as exc:
-                event.last_error = type(exc).__name__
-        await session.commit()
+        if not existing or existing.state != MembershipState.JOINED:
+            await invite_task_chat_member(session, telegram, task, chat, member.user_id)
+    chat.status = ChatStatus.READY
+    chat.last_error = None
+    return True
 
 
-@celery_app.task(name="apps.worker.app.tasks.process_outbox")
-def process_outbox() -> None:
-    asyncio.run(_process_outbox())
+async def provision_task_chat(task_id: str) -> None:
+    async with SessionLocal() as session:
+        task = await session.get(Task, uuid.UUID(task_id))
+        if not task or task.kind != TaskKind.GROUP:
+            return
+        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+        if chat and chat.status == ChatStatus.READY:
+            return
+        if not chat:
+            chat = TaskChat(task_id=task.id, status=ChatStatus.PENDING)
+            session.add(chat)
+            await session.flush()
+        chat.status = ChatStatus.CREATING
+        try:
+            async with TelegramUserService() as telegram:
+                if not chat.telegram_chat_id:
+                    created = await telegram.create_supergroup(
+                        f"Задача: {task.title}", task.description or "Рабочая группа SS Bot"
+                    )
+                    raise_if_retryable(created, "create_supergroup")
+                    if created.kind != TelegramResultKind.SUCCESS:
+                        chat.status = ChatStatus.FAILED
+                        chat.last_error = created.error or created.kind.value
+                        return
+                    chat.telegram_chat_id = int(created.value)
+                    await session.flush()
+                await configure_task_chat(session, telegram, task, chat)
+        except RetryableOutboxError:
+            chat.status = ChatStatus.DEGRADED if chat.telegram_chat_id else ChatStatus.FAILED
+            raise
+        except Exception as exc:
+            chat.status = ChatStatus.DEGRADED if chat.telegram_chat_id else ChatStatus.FAILED
+            chat.last_error = type(exc).__name__
+            raise
+        finally:
+            await session.commit()
 
 
 async def _invite_requested_task_chat_member(task_id: str, user_id: str) -> None:
@@ -349,10 +385,11 @@ async def _invite_requested_task_chat_member(task_id: str, user_id: str) -> None
             return
         chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
         if not chat or chat.status != ChatStatus.READY or not chat.telegram_chat_id:
-            raise RuntimeError("Working group is not ready for member invitation")
+            raise RetryableOutboxError("working_group_not_ready", delay_seconds=60)
         if not await session.scalar(
             select(TaskMember).where(
-                TaskMember.task_id == task.id, TaskMember.user_id == uuid.UUID(user_id)
+                TaskMember.task_id == task.id,
+                TaskMember.user_id == uuid.UUID(user_id),
             )
         ):
             return
@@ -369,40 +406,13 @@ async def _recover_task_chat(task_id: str) -> None:
         chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
         if not chat or not chat.telegram_chat_id:
             raise RuntimeError("No existing Telegram working group to recover")
+        chat.status = ChatStatus.CREATING
         try:
             async with TelegramUserService() as telegram:
-                bot_result = await telegram.add_bot(
-                    chat.telegram_chat_id, settings.telegram_bot_username
-                )
-                if bot_result.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.DEGRADED
-                    chat.last_error = f"bot_add:{bot_result.error or bot_result.kind.value}"
-                    await session.commit()
-                    return
-                brief = await ensure_task_brief(telegram, task, chat)
-                if brief.kind != TelegramResultKind.SUCCESS:
-                    chat.status = ChatStatus.DEGRADED
-                    chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
-                    await session.commit()
-                    return
-                members = list(
-                    (
-                        await session.scalars(
-                            select(TaskMember).where(TaskMember.task_id == task.id)
-                        )
-                    ).all()
-                )
-                for member in members:
-                    existing = await session.scalar(
-                        select(TaskChatMember).where(
-                            TaskChatMember.task_chat_id == chat.id,
-                            TaskChatMember.user_id == member.user_id,
-                        )
-                    )
-                    if not existing or existing.state != MembershipState.JOINED:
-                        await invite_task_chat_member(session, telegram, task, chat, member.user_id)
-                chat.status = ChatStatus.READY
-                chat.last_error = None
+                await configure_task_chat(session, telegram, task, chat)
+        except RetryableOutboxError:
+            chat.status = ChatStatus.DEGRADED
+            raise
         except Exception as exc:
             chat.status = ChatStatus.DEGRADED
             chat.last_error = type(exc).__name__
@@ -411,15 +421,21 @@ async def _recover_task_chat(task_id: str) -> None:
             await session.commit()
 
 
-async def ensure_task_brief(telegram: TelegramUserService, task: Task, chat: TaskChat):
-    if chat.pinned_message_id:
-        return TelegramResult(TelegramResultKind.SUCCESS)
-    result = await telegram.post_and_pin_task_brief(
-        chat.telegram_chat_id, task.title, task.description, task.deadline
-    )
-    if result.kind == TelegramResultKind.SUCCESS:
-        chat.pinned_message_id = int(result.value)
-    return result
+async def _refresh_task_chat_brief(task_id: str) -> None:
+    async with SessionLocal() as session:
+        task = await session.get(Task, uuid.UUID(task_id))
+        if not task or task.kind != TaskKind.GROUP:
+            return
+        chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+        if not chat or chat.status != ChatStatus.READY or not chat.telegram_chat_id:
+            return
+        async with TelegramUserService() as telegram:
+            result = await ensure_task_brief(telegram, task, chat, force=True)
+            raise_if_retryable(result, "refresh_task_brief")
+            if result.kind != TelegramResultKind.SUCCESS:
+                chat.status = ChatStatus.DEGRADED
+                chat.last_error = result.error or result.kind.value
+        await session.commit()
 
 
 async def _remove_task_chat_member(task_id: str, user_id: str) -> None:
@@ -443,42 +459,123 @@ async def _remove_task_chat_member(task_id: str, user_id: str) -> None:
             return
         async with TelegramUserService() as telegram:
             result = await telegram.remove_user(chat.telegram_chat_id, user.telegram_username)
+        raise_if_retryable(result, "remove_user")
         if result.kind == TelegramResultKind.SUCCESS:
             member.state = MembershipState.REMOVED
             member.next_reminder_at = None
             member.last_error = None
         else:
             member.last_error = result.error or result.kind.value
-            raise RuntimeError(member.last_error)
         await session.commit()
+
+
+async def _process_outbox() -> None:
+    now = datetime.now(UTC)
+    async with SessionLocal() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(OutboxEvent)
+                    .where(
+                        OutboxEvent.processed_at.is_(None),
+                        OutboxEvent.available_at <= now,
+                    )
+                    .order_by(OutboxEvent.created_at)
+                    .with_for_update(skip_locked=True)
+                    .limit(20)
+                )
+            ).all()
+        )
+        for event in events:
+            event.attempts += 1
+            try:
+                if event.event_type == "TASK_CREATED":
+                    await provision_task_chat(event.payload["task_id"])
+                elif event.event_type == "TASK_CHAT_MEMBER_INVITE_REQUESTED":
+                    await _invite_requested_task_chat_member(
+                        event.payload["task_id"], event.payload["user_id"]
+                    )
+                elif event.event_type == "TASK_CHAT_RECOVERY_REQUESTED":
+                    await _recover_task_chat(event.payload["task_id"])
+                elif event.event_type == "TASK_CHAT_MEMBER_REMOVAL_REQUESTED":
+                    await _remove_task_chat_member(
+                        event.payload["task_id"], event.payload["user_id"]
+                    )
+                elif event.event_type == "TASK_CHAT_BRIEF_REFRESH_REQUESTED":
+                    await _refresh_task_chat_brief(event.payload["task_id"])
+                # TASK_COMPLETED and future informational events intentionally need no side effect.
+                event.processed_at = datetime.now(UTC)
+                event.last_error = None
+            except RetryableOutboxError as exc:
+                event.last_error = str(exc)
+                if event.attempts >= _MAX_OUTBOX_ATTEMPTS:
+                    event.processed_at = datetime.now(UTC)
+                else:
+                    event.available_at = datetime.now(UTC) + timedelta(seconds=exc.delay_seconds)
+            except Exception as exc:
+                event.last_error = type(exc).__name__
+                if event.attempts >= _MAX_OUTBOX_ATTEMPTS:
+                    event.processed_at = datetime.now(UTC)
+                else:
+                    delay = min(3600, 30 * (2 ** min(event.attempts, 6)))
+                    event.available_at = datetime.now(UTC) + timedelta(seconds=delay)
+        await session.commit()
+
+
+@celery_app.task(name="apps.worker.app.tasks.process_outbox")
+def process_outbox() -> None:
+    asyncio.run(_process_outbox())
 
 
 async def _send_invite_reminders() -> None:
     now = datetime.now(UTC)
     async with SessionLocal() as session:
-        due = list(
+        rows = list(
             (
-                await session.scalars(
-                    select(TaskChatMember)
+                await session.execute(
+                    select(TaskChatMember, TaskChat, User)
+                    .join(TaskChat, TaskChatMember.task_chat_id == TaskChat.id)
+                    .join(User, TaskChatMember.user_id == User.id)
                     .where(
                         TaskChatMember.state == MembershipState.INVITED,
                         TaskChatMember.next_reminder_at <= now,
+                        TaskChat.status == ChatStatus.READY,
                     )
                     .with_for_update(skip_locked=True)
                     .limit(100)
                 )
             ).all()
         )
-        for member in due:
-            user = await session.get(User, member.user_id)
-            if user and member.invite_link:
-                await notify(
-                    user.telegram_id,
-                    f"Напоминание: вступите в рабочую группу задачи: {member.invite_link}",
+        if not rows:
+            return
+        async with TelegramUserService() as telegram:
+            for member, chat, user in rows:
+                membership = await telegram.is_user_in_chat(
+                    chat.telegram_chat_id, user.telegram_username
                 )
-            member.last_reminder_at = now
-            member.reminder_count += 1
-            member.next_reminder_at = now + timedelta(minutes=30)
+                member.last_checked_at = now
+                if membership.kind == TelegramResultKind.SUCCESS:
+                    member.state = MembershipState.JOINED
+                    member.joined_at = member.joined_at or now
+                    member.next_reminder_at = None
+                    member.last_error = None
+                    continue
+                if membership.kind in _RETRYABLE_TELEGRAM_RESULTS:
+                    member.last_error = membership.error or membership.kind.value
+                    member.next_reminder_at = now + timedelta(minutes=5)
+                    continue
+                if member.invite_link and user.status == UserStatus.ACTIVE:
+                    try:
+                        await notify(
+                            user.telegram_id,
+                            f"Напоминание: вступите в рабочую группу задачи: {member.invite_link}",
+                        )
+                        member.last_reminder_at = now
+                        member.reminder_count += 1
+                        member.last_error = None
+                    except Exception as exc:
+                        member.last_error = type(exc).__name__
+                member.next_reminder_at = now + timedelta(minutes=30)
         await session.commit()
 
 
@@ -488,7 +585,7 @@ def send_invite_reminders() -> None:
 
 
 async def _reconcile_task_chat_members() -> None:
-    """Confirm invite-link joins and spot users who left an otherwise active task chat."""
+    """Confirm joins and recover assigned users who left an active working group."""
     now = datetime.now(UTC)
     async with SessionLocal() as session:
         rows = list(
@@ -500,7 +597,13 @@ async def _reconcile_task_chat_members() -> None:
                     .where(
                         TaskChat.status == ChatStatus.READY,
                         TaskChat.telegram_chat_id.is_not(None),
-                        TaskChatMember.state.in_([MembershipState.INVITED, MembershipState.JOINED]),
+                        TaskChatMember.state.in_(
+                            [
+                                MembershipState.INVITED,
+                                MembershipState.JOINED,
+                                MembershipState.NOT_JOINED,
+                            ]
+                        ),
                     )
                     .with_for_update(skip_locked=True)
                     .limit(100)
@@ -523,6 +626,17 @@ async def _reconcile_task_chat_members() -> None:
                 elif result.kind == TelegramResultKind.NOT_JOINED:
                     if member.state == MembershipState.JOINED:
                         member.state = MembershipState.NOT_JOINED
+                        session.add(
+                            OutboxEvent(
+                                event_type="TASK_CHAT_MEMBER_INVITE_REQUESTED",
+                                aggregate_type="task_chat",
+                                aggregate_id=str(chat.id),
+                                payload={
+                                    "task_id": str(chat.task_id),
+                                    "user_id": str(user.id),
+                                },
+                            )
+                        )
                     member.last_error = None
                 elif result.kind == TelegramResultKind.USERNAME_NOT_FOUND:
                     member.last_error = "username_unavailable_for_membership_check"
@@ -606,7 +720,6 @@ async def _process_archive_retention() -> None:
                     if photo.preview_object_key:
                         delete_object(photo.preview_object_key)
             except Exception:
-                # Do not mark the archive purged until every object deletion succeeded.
                 event.retention_warning_sent_at = now
                 continue
             reports = list(
@@ -638,6 +751,7 @@ async def _process_cleanup() -> None:
                     .join(Task)
                     .where(
                         Task.cleanup_at.is_not(None),
+                        Task.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
                         TaskChat.status.in_([ChatStatus.READY, ChatStatus.CLEANUP_PENDING]),
                     )
                 )
@@ -645,50 +759,58 @@ async def _process_cleanup() -> None:
         )
         for chat in chats:
             task = await session.get(Task, chat.task_id)
-            assert task
-            if not chat.cleanup_warned_at and task.cleanup_at - now <= timedelta(hours=24):
+            if not task or not task.cleanup_at:
+                continue
+            remaining = task.cleanup_at - now
+            if (
+                not chat.cleanup_warned_at
+                and timedelta(0) < remaining <= timedelta(hours=24)
+            ):
                 for member in (
                     await session.scalars(
                         select(TaskChatMember).where(TaskChatMember.task_chat_id == chat.id)
                     )
                 ).all():
                     user = await session.get(User, member.user_id)
-                    if user:
+                    if user and user.status == UserStatus.ACTIVE:
                         await notify(
                             user.telegram_id,
-                            f"Рабочая группа задачи «{task.title}» будет удалена через 24 часа.",
+                            f"Рабочая группа задачи «{task.title}» будет удалена менее чем через 24 часа.",
                         )
                 chat.cleanup_warned_at = now
-            if task.cleanup_at <= now and chat.telegram_chat_id:
-                if not await archive_is_persisted(session, task):
-                    chat.status = ChatStatus.CLEANUP_PENDING
-                    chat.last_error = "archive_verification_failed"
-                    continue
+            if task.cleanup_at > now or not chat.telegram_chat_id:
+                continue
+            if not await archive_is_persisted(session, task):
                 chat.status = ChatStatus.CLEANUP_PENDING
-                try:
-                    async with TelegramUserService() as telegram:
-                        for member in (
-                            await session.scalars(
-                                select(TaskChatMember).where(
-                                    TaskChatMember.task_chat_id == chat.id,
-                                    TaskChatMember.invite_link.is_not(None),
-                                )
+                chat.last_error = "archive_verification_failed"
+                continue
+            chat.status = ChatStatus.CLEANUP_PENDING
+            try:
+                async with TelegramUserService() as telegram:
+                    for member in (
+                        await session.scalars(
+                            select(TaskChatMember).where(
+                                TaskChatMember.task_chat_id == chat.id,
+                                TaskChatMember.invite_link.is_not(None),
                             )
-                        ).all():
-                            await telegram.revoke_invite(chat.telegram_chat_id, member.invite_link)
-                        deleted = await telegram.delete_supergroup(chat.telegram_chat_id)
-                        if deleted.kind == TelegramResultKind.SUCCESS:
-                            chat.status = ChatStatus.DELETED
-                            chat.last_error = None
-                        else:
-                            chat.last_error = deleted.error or deleted.kind.value
-                except Exception as exc:
-                    chat.last_error = type(exc).__name__
+                        )
+                    ).all():
+                        await telegram.revoke_invite(chat.telegram_chat_id, member.invite_link)
+                    deleted = await telegram.delete_supergroup(chat.telegram_chat_id)
+                    if deleted.kind == TelegramResultKind.SUCCESS:
+                        chat.status = ChatStatus.DELETED
+                        chat.last_error = None
+                    else:
+                        chat.last_error = deleted.error or deleted.kind.value
+            except Exception as exc:
+                chat.last_error = type(exc).__name__
         await session.commit()
 
 
 async def archive_is_persisted(session, task: Task) -> bool:
-    """Keep Telegram disposable: do not delete a chat until stored artifacts are verifiable."""
+    """Never delete a disposable Telegram chat until all report media are verifiable."""
+    if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        return False
     if task.event_id:
         await refresh_event_retention(session, task.event_id)
     photos = list(
