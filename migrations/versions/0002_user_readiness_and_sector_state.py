@@ -6,6 +6,7 @@ Create Date: 2026-08-25
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0002_user_readiness"
@@ -22,9 +23,7 @@ def upgrade() -> None:
     columns = {column["name"] for column in sa.inspect(bind).get_columns("sectors")}
     if "is_active" not in columns:
         with op.batch_alter_table("sectors") as batch:
-            batch.add_column(
-                sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true())
-            )
+            batch.add_column(sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()))
 
 
 def downgrade() -> None:

@@ -128,9 +128,13 @@ def test_signed_session_round_trip() -> None:
     assert verify_access_token(token, "test-secret") == "08a093e2-5b38-44be-9e6e-ae4e935c39fc"
 
 
-def test_readiness_has_request_trace_id() -> None:
-    client = TestClient(app)
-    response = client.get("/readyz")
+def test_readiness_has_request_trace_id(monkeypatch) -> None:
+    import apps.api.app.main as api_main
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(api_main, "engine", test_engine)
+    with TestClient(app) as client:
+        response = client.get("/readyz")
     assert response.status_code == 200
     assert response.headers["X-Request-ID"]
 

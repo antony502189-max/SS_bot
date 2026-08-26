@@ -144,9 +144,7 @@ async def _send_due_notifications() -> None:
                 notification.last_error = None
             except Exception as exc:
                 notification.last_error = type(exc).__name__
-                notification.next_attempt_at = now + timedelta(
-                    minutes=min(30, 2**notification.attempts)
-                )
+                notification.next_attempt_at = now + timedelta(minutes=min(30, 2**notification.attempts))
                 notification.scheduled_at = notification.next_attempt_at
                 if notification.attempts >= 5:
                     notification.status = "failed"
@@ -321,11 +319,7 @@ async def configure_task_chat(
         chat.last_error = f"task_brief:{brief.error or brief.kind.value}"
         return False
 
-    members = list(
-        (
-            await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))
-        ).all()
-    )
+    members = list((await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))).all())
     for member in members:
         existing = await session.scalar(
             select(TaskChatMember).where(
@@ -498,9 +492,7 @@ async def _process_outbox() -> None:
                 elif event.event_type == "TASK_CHAT_RECOVERY_REQUESTED":
                     await _recover_task_chat(event.payload["task_id"])
                 elif event.event_type == "TASK_CHAT_MEMBER_REMOVAL_REQUESTED":
-                    await _remove_task_chat_member(
-                        event.payload["task_id"], event.payload["user_id"]
-                    )
+                    await _remove_task_chat_member(event.payload["task_id"], event.payload["user_id"])
                 elif event.event_type == "TASK_CHAT_BRIEF_REFRESH_REQUESTED":
                     await _refresh_task_chat_brief(event.payload["task_id"])
                 # TASK_COMPLETED and future informational events intentionally need no side effect.
@@ -550,9 +542,7 @@ async def _send_invite_reminders() -> None:
             return
         async with TelegramUserService() as telegram:
             for member, chat, user in rows:
-                membership = await telegram.is_user_in_chat(
-                    chat.telegram_chat_id, user.telegram_username
-                )
+                membership = await telegram.is_user_in_chat(chat.telegram_chat_id, user.telegram_username)
                 member.last_checked_at = now
                 if membership.kind == TelegramResultKind.SUCCESS:
                     member.state = MembershipState.JOINED
@@ -614,9 +604,7 @@ async def _reconcile_task_chat_members() -> None:
             return
         async with TelegramUserService() as telegram:
             for member, chat, user in rows:
-                result = await telegram.is_user_in_chat(
-                    chat.telegram_chat_id, user.telegram_username
-                )
+                result = await telegram.is_user_in_chat(chat.telegram_chat_id, user.telegram_username)
                 member.last_checked_at = now
                 if result.kind == TelegramResultKind.SUCCESS:
                     member.state = MembershipState.JOINED
@@ -684,10 +672,7 @@ async def _process_archive_retention() -> None:
                             select(User).where(
                                 User.status == UserStatus.ACTIVE,
                                 (User.role == Role.ADMIN)
-                                | (
-                                    (User.role == Role.SECTOR_HEAD)
-                                    & (User.sector_id == event.sector_id)
-                                ),
+                                | ((User.role == Role.SECTOR_HEAD) & (User.sector_id == event.sector_id)),
                             )
                         )
                     ).all()
@@ -723,15 +708,13 @@ async def _process_archive_retention() -> None:
                 event.retention_warning_sent_at = now
                 continue
             reports = list(
-                (
-                    await session.scalars(
-                        select(TaskReport).join(Task).where(Task.event_id == event.id)
-                    )
-                ).all()
+                (await session.scalars(select(TaskReport).join(Task).where(Task.event_id == event.id))).all()
             )
             for report in reports:
                 report.comment = None
                 report.approval_comment = None
+            for photo in photos:
+                await session.delete(photo)
             event.purged_at = now
         await session.commit()
 
@@ -762,10 +745,7 @@ async def _process_cleanup() -> None:
             if not task or not task.cleanup_at:
                 continue
             remaining = task.cleanup_at - now
-            if (
-                not chat.cleanup_warned_at
-                and timedelta(0) < remaining <= timedelta(hours=24)
-            ):
+            if not chat.cleanup_warned_at and timedelta(0) < remaining <= timedelta(hours=24):
                 for member in (
                     await session.scalars(
                         select(TaskChatMember).where(TaskChatMember.task_chat_id == chat.id)

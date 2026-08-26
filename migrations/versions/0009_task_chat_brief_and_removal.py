@@ -1,6 +1,7 @@
 """Track pinned task briefs and removed chat members."""
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0009_task_chat_brief_and_removal"

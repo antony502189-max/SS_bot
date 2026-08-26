@@ -1,6 +1,7 @@
 """Add event archive retention and purge tracking."""
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0007_event_archive_retention"

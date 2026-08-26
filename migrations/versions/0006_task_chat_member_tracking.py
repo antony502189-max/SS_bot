@@ -1,6 +1,7 @@
 """Track task-chat membership reconciliation and reminder delivery."""
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0006_task_chat_member_tracking"

@@ -281,16 +281,3 @@ class ReportOut(BaseModel):
     approved_at: datetime | None
     photos: list[PhotoOut] = Field(default_factory=list)
     model_config = {"from_attributes": True}
-
-
-class ReportOut(BaseModel):
-    id: uuid.UUID
-    status: ReportStatus
-    comment: str | None
-    approval_comment: str | None
-    submitted_by_id: uuid.UUID
-    submitted_at: datetime | None
-    approved_at: datetime | None
-    photo_count: int = 0
-
-    model_config = {"from_attributes": True}

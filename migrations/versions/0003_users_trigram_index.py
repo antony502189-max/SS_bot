@@ -17,8 +17,7 @@ def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.drop_index("ix_users_full_name_trgm", table_name="users")
         op.execute(
-            "CREATE INDEX ix_users_full_name_trgm ON users "
-            "USING gin (normalized_full_name gin_trgm_ops)"
+            "CREATE INDEX ix_users_full_name_trgm ON users USING gin (normalized_full_name gin_trgm_ops)"
         )
 
 

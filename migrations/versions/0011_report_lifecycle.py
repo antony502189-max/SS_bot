@@ -6,6 +6,7 @@ Create Date: 2026-08-26
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0011_report_lifecycle"
