@@ -1,31 +1,36 @@
 # Implementation plan
 
-Updated: 2026-08-25
+Updated: 2026-08-26
 
-This is a greenfield implementation built from the target architecture. The repository now contains the end-to-end implementation; the remaining work is environment-specific integration proof and operational rollout.
+The product is now bot-only from the user's point of view. The FastAPI service remains the business/backend layer, but users do not need a Telegram Mini App. All required day-to-day workflows are exposed through bot messages, reply keyboards, and inline buttons.
 
 ## Coverage audit
 
-| Phase | Status | Evidence / next work |
+| Area | Status | Evidence / remaining proof |
 | --- | --- | --- |
-| 0 Foundation | Implemented | Docker, API, bot, worker, Mini App, Alembic, CI, production Caddy edge configuration, readiness checks, and structured request logs exist. |
-| 1 Registration | Implemented | `/start`, profile capture, username readiness, Telegram init-data HMAC, signed sessions, authenticated `/me`, and audit records exist. |
-| 2 Roles/sectors | Implemented | Authenticated role/sector guards, user activation/deactivation, and administrator user management endpoints exist; administrators can manage people from the Mini App. |
-| 3 Search | Implemented | Normalized person search and PostgreSQL trigram index migration are included. |
-| 4 Events | Implemented | Event and participant lifecycle, sector guards, archive metadata, exports, and retention controls exist. |
-| 5 Tasks | Implemented | Task creation/change/cancellation, member invariants, checklist, reports, and strict lifecycle transitions exist. |
-| 6–10 Outbox/chat/invites/reminders | Implemented | Durable outbox, targeted re-invites, bot admin promotion, pinned task briefs, member removal, reminders, and ten-minute membership reconciliation exist. |
-| 11–14 Execution/notifications/cleanup | Implemented | Presigned reports, server-side image inspection and previews, durable notifications, overdue/deadline jobs, cleanup lifecycle, and archive verification before Telegram deletion exist. |
-| 15–16 Archive/retention | Implemented | Event archive API, PDF/ZIP exports, one-year scheduling, 30-day alerts, extensions, and soft purge exist. |
-| 17 Hardening | Implemented in code | Webhook mode, reverse proxy, JSON request logs, health/readiness endpoints, CI, and deployment runbook are included. Metrics, backups, credential rotation, and live-alert integrations remain deployment operations. |
+| Foundation | Implemented | Docker, API, bot, worker, Alembic, PostgreSQL/Redis/S3 configuration, CI, Caddy, readiness checks, and structured logs exist. |
+| Registration | Implemented | `/start`, full-name capture, Telegram ID, username synchronization/readiness, role-aware bot menu. |
+| Roles/users | Implemented in bot | Administrator user list/card, role changes, activation/deactivation. Sector assignment/sector CRUD remain backend-supported and can be expanded in bot if required by operations. |
+| Search | Implemented | Full-name and `@username` search is used directly by bot task/event workflows. |
+| Events | Implemented in bot | Event creation, participant selection, event cards, archive view, PDF/ZIP delivery, and retention extension. |
+| Tasks | Implemented in bot | Task filters/cards, individual/group creation, event link, assignee selection, leader selection, deadline, description, checklist, editing, member changes, leader replacement, checklist management, and cancellation. |
+| Reports/photos | Implemented in bot | Draft comment, up to five photos, preview/delete, submit, leader approval/return, and resubmission. |
+| Working groups | Implemented | Durable task-chat creation, MTProto service account, bot promotion, direct invite, personal-link fallback, 30-minute reminders, join reconciliation, retry/recovery, member removal, and cleanup. Bot exposes group state and retry actions. |
+| Notifications/deadlines | Implemented | Assignment/update/completion notifications, 24-hour deadline reminders, overdue transition, durable retries. |
+| Archive/retention | Implemented | Event archive, PDF/ZIP, one-year retention, 30-day warning, extension, purge workflow. |
+| Mini App | Removed from active product | It is not part of Docker runtime, production routing, or CI acceptance. Source may remain dormant for possible future reuse. |
+| Production hardening | Implemented in code / live proof required | Webhook mode, TLS edge, health/readiness, retry logic, runbook, and CI exist. Real Telegram/S3/PostgreSQL staging acceptance, backups, monitoring, and alert ownership remain deployment operations. |
 
-## Current implementation order
+## Current order to finish rollout
 
-1. Provision production PostgreSQL, Redis, S3-compatible storage, HTTPS domain, and an organization-owned MTProto account.
-2. Rotate the exposed BotFather token, configure the replacement token, and run the webhook smoke test.
-3. Run the real Telegram, storage, and retention staging test matrix before launch.
-4. Configure infrastructure backup, metrics, alerting, and credential-rotation ownership.
+1. Keep CI green on the bot-only branch.
+2. Provision staging PostgreSQL, Redis, S3-compatible storage, HTTPS domain, and an organization-owned MTProto account.
+3. Rotate/configure the BotFather token and Telegram webhook secret.
+4. Run the complete bot-only staging acceptance matrix from `docs/operations-runbook.md`.
+5. Fix any live Telegram permission/rate-limit differences found in staging.
+6. Configure production backups, metrics, alerting, and credential-rotation ownership.
+7. Merge the verified remediation branch into `main` only after staging acceptance.
 
 ## External blockers
 
-No external credential is needed for implementation or mocked verification. A new BotFather token, HTTPS host, S3 deployment credentials, and an organization-owned authorized MTProto account are required for live integration testing and deployment. The originally shared bot token must be treated as compromised and rotated before use.
+No external credential is required for code-level CI verification. Real integration proof requires a valid BotFather token, HTTPS host, object-storage deployment credentials, and an authorized organization-owned MTProto account. Any previously exposed bot token or MTProto session must be treated as compromised and replaced before use.
