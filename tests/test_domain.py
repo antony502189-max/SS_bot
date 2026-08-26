@@ -17,7 +17,6 @@ from apps.api.app.models import (
     Base,
     ChatStatus,
     Event,
-    MembershipState,
     Notification,
     OutboxEvent,
     ReportStatus,
@@ -25,7 +24,6 @@ from apps.api.app.models import (
     Sector,
     Task,
     TaskChat,
-    TaskChatMember,
     TaskKind,
     TaskMember,
     TaskReport,
@@ -155,9 +153,7 @@ def test_telegram_chat_id_round_trip() -> None:
 def test_mtproto_membership_errors_have_actionable_states() -> None:
     already_member = classify_error(errors.UserAlreadyParticipantError(None))
     assert already_member.kind == TelegramResultKind.SUCCESS
-    assert (
-        classify_error(errors.UserNotParticipantError(None)).kind == TelegramResultKind.NOT_JOINED
-    )
+    assert classify_error(errors.UserNotParticipantError(None)).kind == TelegramResultKind.NOT_JOINED
 
 
 @pytest.mark.asyncio
