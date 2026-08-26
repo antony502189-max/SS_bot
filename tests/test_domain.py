@@ -263,6 +263,7 @@ async def test_group_task_creates_pending_chat_in_task_transaction(session) -> N
     )
     session.add_all([creator, leader])
     await session.flush()
+    cleanup_at = datetime.now(UTC) + timedelta(days=2)
     task, _ = await create_task(
         session,
         creator,
@@ -270,6 +271,7 @@ async def test_group_task_creates_pending_chat_in_task_transaction(session) -> N
             title="Group task",
             kind=TaskKind.GROUP,
             deadline=datetime.now(UTC) + timedelta(days=1),
+            cleanup_at=cleanup_at,
             leader_id=leader.id,
             member_ids=[leader.id],
         ),
@@ -278,6 +280,7 @@ async def test_group_task_creates_pending_chat_in_task_transaction(session) -> N
     chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
     assert chat is not None
     assert chat.telegram_chat_id is None
+    assert task.cleanup_at == cleanup_at
 
 
 @pytest.mark.asyncio
