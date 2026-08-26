@@ -53,6 +53,19 @@ def create_presigned_upload(
     return object_key, url
 
 
+def create_presigned_download(object_key: str) -> str:
+    client = _client()
+    if client is None:
+        raise RuntimeError("Object storage is not configured")
+    settings = get_settings()
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.s3_bucket, "Key": object_key},
+        ExpiresIn=settings.s3_presign_ttl_seconds,
+        HttpMethod="GET",
+    )
+
+
 def object_exists(object_key: str) -> bool:
     client = _client()
     if client is None:
