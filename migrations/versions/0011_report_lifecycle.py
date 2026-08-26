@@ -37,12 +37,22 @@ def upgrade() -> None:
             batch.add_column(sa.Column("returned_at", sa.DateTime(timezone=True), nullable=True))
 
     # Existing reports represent already submitted work. Preserve approved reports as approved.
-    op.execute(
-        sa.text(
-            "UPDATE task_reports SET status = CASE "
-            "WHEN approved_at IS NOT NULL THEN 'APPROVED' ELSE 'SUBMITTED' END"
+    # PostgreSQL does not implicitly cast CASE text results to an enum, so cast each branch.
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                "UPDATE task_reports SET status = CASE "
+                "WHEN approved_at IS NOT NULL THEN 'APPROVED'::reportstatus "
+                "ELSE 'SUBMITTED'::reportstatus END"
+            )
         )
-    )
+    else:
+        op.execute(
+            sa.text(
+                "UPDATE task_reports SET status = CASE "
+                "WHEN approved_at IS NOT NULL THEN 'APPROVED' ELSE 'SUBMITTED' END"
+            )
+        )
 
 
 def downgrade() -> None:
