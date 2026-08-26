@@ -2,7 +2,6 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from aiogram import Bot
 from celery import Celery
 from sqlalchemy import select
 
@@ -28,6 +27,7 @@ from apps.api.app.models import (
 )
 from apps.api.app.services import queue_task_notifications, refresh_event_retention
 from apps.api.app.storage import delete_object, object_exists
+from apps.api.app.telegram_bot import build_telegram_bot
 from apps.telegram_user_service.app.client import (
     TelegramResult,
     TelegramResultKind,
@@ -65,7 +65,7 @@ celery_app.conf.beat_schedule = {
 async def notify(telegram_id: int, text: str) -> None:
     if not settings.telegram_bot_token:
         return
-    bot = Bot(settings.telegram_bot_token)
+    bot = build_telegram_bot(settings.telegram_bot_token)
     try:
         await bot.send_message(telegram_id, text)
     finally:

@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import Dispatcher, F, Router
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -39,6 +39,7 @@ from apps.api.app.models import (
 )
 from apps.api.app.schemas import TaskCreate
 from apps.api.app.services import create_task, normalize_full_name
+from apps.api.app.telegram_bot import build_telegram_bot
 
 router = Router()
 USER_TIMEZONE = ZoneInfo("Europe/Minsk")
@@ -465,7 +466,7 @@ async def run() -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     if settings.telegram_webhook_url:
-        bot = Bot(token)
+        bot = build_telegram_bot(token)
         path = settings.telegram_webhook_path
         if not path.startswith("/"):
             path = f"/{path}"
@@ -483,7 +484,7 @@ async def run() -> None:
         return
     retry_seconds = 5
     while True:
-        bot = Bot(token)
+        bot = build_telegram_bot(token)
         try:
             await bot.delete_webhook(drop_pending_updates=False)
             await dispatcher.start_polling(
