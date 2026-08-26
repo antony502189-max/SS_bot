@@ -66,6 +66,7 @@ def test_runtime_and_ci_do_not_depend_on_miniapp() -> None:
     caddy = Path("Caddyfile").read_text(encoding="utf-8")
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 
+    assert not Path("apps/miniapp").exists()
     assert "miniapp:" not in compose
     assert "miniapp:" not in production
     assert "reverse_proxy miniapp" not in caddy
