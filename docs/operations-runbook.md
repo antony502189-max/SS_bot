@@ -23,11 +23,13 @@ Use this runbook for a staging deployment first, then repeat the same checks for
 
 ## Staging acceptance test
 
-1. Send `/start` to the replacement bot and complete the full-name and username flow.
-2. Open the Mini App inside Telegram and confirm the signed session, task list, and administrator people management view load.
-3. Create a group task with a leader and two participants. Verify the worker creates the chat, posts and pins the task brief, promotes the bot only as needed, and handles one member leaving and rejoining.
-4. Submit a report with a JPEG, PNG, and WebP photo. Confirm server-generated previews, manager approval/return, durable notification, PDF export, and photo ZIP download.
-5. On a disposable task, validate invitation retry, cleanup warning, invitation revocation, and chat deletion. Do not shorten retention in production merely to test it.
+1. Send `/start` to the replacement bot and complete the full-name and username flow. Verify the correct role-aware reply keyboard appears.
+2. Exercise the bot-only task workflow: open task filters, create an individual task, create a group task, edit task details, change checklist items, add/remove a member, and replace the group leader.
+3. Create a group task with a leader and two participants. Verify the worker creates the chat, posts and pins the task brief, adds the task creator, handles direct invitation or invite-link fallback, sends 30-minute reminders only while a user has not joined, and handles one member leaving and rejoining.
+4. Build a report entirely through bot buttons. Add JPEG, PNG, and WebP photos, preview and remove a photo, submit the report, return it for rework, resubmit it, and approve it as the leader.
+5. Create an event through the bot, verify participants and budget, open its archive, request the PDF and photo ZIP in Telegram, and test retention extension with an administrator account.
+6. Test administrator controls from the bot by changing a test user role and toggling account activation.
+7. On a disposable closed task, validate invitation retry, cleanup warning, invitation revocation, and chat deletion. Verify an active or merely overdue task is never deleted before closure and the calculated cleanup time.
 
 ## Backup, restore, and rollback
 
