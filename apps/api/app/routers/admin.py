@@ -39,6 +39,7 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     changes = body.model_dump(exclude_unset=True)
+    audit_changes = body.model_dump(exclude_unset=True, mode="json")
     if "sector_id" in changes and changes["sector_id"]:
         if not await session.get(Sector, changes["sector_id"]):
             raise HTTPException(status_code=422, detail="Sector not found")
@@ -53,7 +54,12 @@ async def update_user(
     for key, value in changes.items():
         setattr(user, key, value)
     await audit(
-        session, actor.id, "admin.user_updated", "user", user.id, {"old": old, "new": changes}
+        session,
+        actor.id,
+        "admin.user_updated",
+        "user",
+        user.id,
+        {"old": old, "new": audit_changes},
     )
     await session.commit()
     await session.refresh(user)
