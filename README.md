@@ -20,7 +20,8 @@ The FastAPI service remains an internal/backend API and health surface. PostgreS
 - Report draft, comment, up to five JPEG/PNG/WebP photos, photo preview/delete, final submission, return for rework, resubmission, and leader approval.
 - Telegram working-group status, invite retry, group recovery, and direct link to the working group.
 - Event creation, participant selection, archive view, PDF export, photo ZIP export, and retention extension.
-- Administrator user management for roles and activation state.
+- Administrator user management for roles, activation state, and sector assignment.
+- Bot-native sector creation, rename, description editing, activation/deactivation, and user-to-sector assignment.
 - Automatic group creation, direct invite/fallback invite link, 30-minute reminders until join, membership reconciliation, cleanup warning, and group deletion.
 - PostgreSQL transactional outbox, retry/backoff, audit logs, deadline reminders, overdue processing, retention, and archive purge.
 
@@ -49,7 +50,7 @@ For a local Python-only iteration:
 ```powershell
 python -m pip install -e .
 $env:APP_ENV = 'development'
-python -m apps.bot.app.main
+python -m apps.bot.app.runner
 ```
 
 The development default can use SQLite; Docker uses PostgreSQL and runs `alembic upgrade head` before starting the API.
