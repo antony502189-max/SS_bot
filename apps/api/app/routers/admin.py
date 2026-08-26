@@ -41,8 +41,18 @@ async def update_user(
     changes = body.model_dump(exclude_unset=True)
     audit_changes = body.model_dump(exclude_unset=True, mode="json")
     if "sector_id" in changes and changes["sector_id"]:
-        if not await session.get(Sector, changes["sector_id"]):
-            raise HTTPException(status_code=422, detail="Sector not found")
+        sector = await session.get(Sector, changes["sector_id"])
+        if not sector or not sector.is_active:
+            raise HTTPException(status_code=422, detail="Active sector not found")
+
+    target_role = changes.get("role", user.role)
+    target_sector_id = changes.get("sector_id", user.sector_id)
+    if target_role == Role.SECTOR_HEAD and target_sector_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Assign an active sector before making the user a sector head",
+        )
+
     if user.id == actor.id and changes.get("status") and changes["status"].value != "active":
         raise HTTPException(status_code=422, detail="You cannot deactivate your own account")
     old = {
