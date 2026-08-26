@@ -46,9 +46,6 @@ services:
     restart: unless-stopped
     depends_on:
       api: { condition: service_started }
-  miniapp:
-    build: ./apps/miniapp
-    ports: ["8080:80"]
 volumes:
   postgres_data:
   minio_data:
