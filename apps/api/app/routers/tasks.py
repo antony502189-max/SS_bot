@@ -16,6 +16,7 @@ from ..models import (
     TaskChat,
     TaskChatMember,
     TaskChecklistItem,
+    TaskKind,
     TaskMember,
     TaskStatus,
     User,
@@ -48,6 +49,7 @@ from ..services import (
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+_OPEN_TASK_STATUSES = {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}
 
 
 async def chat_out(session: AsyncSession, chat: TaskChat) -> TaskChatOut:
@@ -187,7 +189,7 @@ async def retry_task_chat(
     if chat.status == ChatStatus.READY:
         raise HTTPException(status_code=422, detail="Working group is already active")
     if chat.telegram_chat_id:
-        raise HTTPException(status_code=422, detail="Existing group requires member-level recovery")
+        raise HTTPException(status_code=422, detail="Existing group requires recovery")
     chat.status = ChatStatus.PENDING
     chat.last_error = None
     session.add(
@@ -242,16 +244,21 @@ async def update_task(
     session: AsyncSession = Depends(get_session),
 ) -> Task:
     task = await task_for_manager(session, task_id, actor)
-    if task.status not in {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}:
+    if task.status not in _OPEN_TASK_STATUSES:
         raise HTTPException(status_code=422, detail="Only open tasks can be changed")
     changes = body.model_dump(exclude_unset=True)
     if "deadline" in changes and changes["deadline"] <= datetime.now(UTC):
         raise HTTPException(status_code=422, detail="Deadline must be in the future")
-    if "leader_id" in changes and changes["leader_id"]:
+    if "leader_id" in changes:
+        if task.kind != TaskKind.GROUP:
+            raise HTTPException(status_code=422, detail="Individual tasks cannot have a leader")
+        if not changes["leader_id"]:
+            raise HTTPException(status_code=422, detail="Group task must keep a leader")
         await require_active_user(session, changes["leader_id"])
         leader = await session.scalar(
             select(TaskMember).where(
-                TaskMember.task_id == task.id, TaskMember.user_id == changes["leader_id"]
+                TaskMember.task_id == task.id,
+                TaskMember.user_id == changes["leader_id"],
             )
         )
         if not leader:
@@ -262,6 +269,7 @@ async def update_task(
             member.is_leader = member.user_id == changes["leader_id"]
     for key, value in changes.items():
         setattr(task, key, value.strip() if key == "title" and value else value)
+
     members = {
         member.user_id
         for member in (
@@ -269,6 +277,15 @@ async def update_task(
         ).all()
     }
     await queue_task_notifications(session, task, members, "TASK_UPDATED")
+    if task.kind == TaskKind.GROUP and {"title", "description", "deadline"} & changes.keys():
+        session.add(
+            OutboxEvent(
+                event_type="TASK_CHAT_BRIEF_REFRESH_REQUESTED",
+                aggregate_type="task",
+                aggregate_id=str(task.id),
+                payload={"task_id": str(task.id)},
+            )
+        )
     await audit(session, actor.id, "task.updated", "task", task.id, changes)
     await session.commit()
     await session.refresh(task)
@@ -306,9 +323,9 @@ async def add_task_member(
     session: AsyncSession = Depends(get_session),
 ) -> TaskMemberOut:
     task = await task_for_manager(session, task_id, actor)
-    if task.status not in {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}:
+    if task.status not in _OPEN_TASK_STATUSES:
         raise HTTPException(status_code=422, detail="Only open tasks can receive members")
-    if task.kind.value == "individual":
+    if task.kind == TaskKind.INDIVIDUAL:
         raise HTTPException(status_code=422, detail="Individual task membership is fixed")
     user = await require_active_user(session, body.user_id)
     if actor.role == Role.SECTOR_HEAD and user.sector_id != task.sector_id:
@@ -333,7 +350,9 @@ async def add_task_member(
     await audit(session, actor.id, "task.member_added", "task", task.id, {"user_id": str(user.id)})
     await session.commit()
     return TaskMemberOut(
-        user=UserOut.model_validate(user, from_attributes=True), is_creator=False, is_leader=False
+        user=UserOut.model_validate(user, from_attributes=True),
+        is_creator=False,
+        is_leader=False,
     )
 
 
@@ -354,7 +373,8 @@ async def retry_task_chat_member(
         raise HTTPException(status_code=404, detail="Task member not found")
     member = await session.scalar(
         select(TaskChatMember).where(
-            TaskChatMember.task_chat_id == chat.id, TaskChatMember.user_id == user_id
+            TaskChatMember.task_chat_id == chat.id,
+            TaskChatMember.user_id == user_id,
         )
     )
     if member and member.state == MembershipState.JOINED:
@@ -387,6 +407,8 @@ async def remove_task_member(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     task = await task_for_manager(session, task_id, actor)
+    if task.status not in _OPEN_TASK_STATUSES:
+        raise HTTPException(status_code=422, detail="Only open tasks can change members")
     member = await session.scalar(
         select(TaskMember).where(TaskMember.task_id == task.id, TaskMember.user_id == user_id)
     )
@@ -406,7 +428,12 @@ async def remove_task_member(
         )
     await session.delete(member)
     await audit(
-        session, actor.id, "task.member_removed", "task", task.id, {"user_id": str(user_id)}
+        session,
+        actor.id,
+        "task.member_removed",
+        "task",
+        task.id,
+        {"user_id": str(user_id)},
     )
     await session.commit()
 
@@ -419,7 +446,7 @@ async def add_checklist_item(
     session: AsyncSession = Depends(get_session),
 ) -> TaskChecklistItem:
     task = await task_for_manager(session, task_id, actor)
-    if task.status not in {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}:
+    if task.status not in _OPEN_TASK_STATUSES:
         raise HTTPException(status_code=422, detail="Only open tasks can be changed")
     position = len(
         (
@@ -451,12 +478,19 @@ async def delete_checklist_item(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     task = await task_for_manager(session, task_id, actor)
+    if task.status not in _OPEN_TASK_STATUSES:
+        raise HTTPException(status_code=422, detail="Only open tasks can be changed")
     item = await session.get(TaskChecklistItem, item_id)
     if not item or item.task_id != task.id:
         raise HTTPException(status_code=404, detail="Checklist item not found")
     await session.delete(item)
     await audit(
-        session, actor.id, "task.checklist_removed", "task", task.id, {"item_id": str(item_id)}
+        session,
+        actor.id,
+        "task.checklist_removed",
+        "task",
+        task.id,
+        {"item_id": str(item_id)},
     )
     await session.commit()
 
@@ -498,7 +532,7 @@ async def update_checklist(
     if not await is_task_member(session, task_id, actor.id):
         raise HTTPException(status_code=403, detail="Task membership required")
     task = await session.get(Task, task_id)
-    if not task or task.status not in {TaskStatus.ACTIVE, TaskStatus.OVERDUE, TaskStatus.RETURNED}:
+    if not task or task.status not in _OPEN_TASK_STATUSES:
         raise HTTPException(
             status_code=422, detail="Checklist can be updated only for an open task"
         )
