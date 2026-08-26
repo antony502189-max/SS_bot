@@ -311,6 +311,17 @@ async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
     selected = set(data["member_ids"])
     selected.symmetric_difference_update({person_id})
     await state.update_data(member_ids=list(selected))
+    visible_ids = [
+        uuid.UUID(button.callback_data.rsplit(":", 1)[-1])
+        for row in callback.message.reply_markup.inline_keyboard
+        for button in row
+        if button.callback_data and button.callback_data.startswith("issue:person:")
+    ]
+    async with SessionLocal() as session:
+        visible = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
+    by_id = {user.id: user for user in visible}
+    users = [by_id[person_id] for person_id in visible_ids if person_id in by_id]
+    await callback.message.edit_reply_markup(reply_markup=people_keyboard(users, selected))
     await callback.answer("Добавлен" if person_id in selected else "Убран")
 
 
