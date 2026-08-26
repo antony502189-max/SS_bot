@@ -7,6 +7,22 @@ on:
 jobs:
   bot-backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ss_bot_test
+          POSTGRES_USER: ss_bot
+          POSTGRES_PASSWORD: ss_bot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ss_bot -d ss_bot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_POSTGRES_URL: postgresql+asyncpg://ss_bot:ss_bot@127.0.0.1:5432/ss_bot_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -14,3 +30,25 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: python -m ruff check .
       - run: python -m pytest
+      - name: Validate Alembic on PostgreSQL
+        env:
+          DATABASE_URL: postgresql+asyncpg://ss_bot:ss_bot@127.0.0.1:5432/ss_bot_test
+        run: |
+          alembic upgrade head
+          python - <<'PY'
+          import asyncio
+          import os
+          from sqlalchemy import text
+          from sqlalchemy.ext.asyncio import create_async_engine
+
+          async def main():
+              engine = create_async_engine(os.environ["DATABASE_URL"])
+              async with engine.connect() as connection:
+                  value = await connection.scalar(text("select count(*) from information_schema.tables where table_schema='public'"))
+                  assert value and value > 5, value
+              await engine.dispose()
+
+          asyncio.run(main())
+          PY
+      - name: Validate Docker Compose configuration
+        run: docker compose config >/dev/null
