@@ -10,6 +10,7 @@ from aiohttp import web
 from apps.api.app.config import get_settings
 from apps.api.app.telegram_bot import build_telegram_bot
 from apps.bot.app.admin_panel_v2 import router as admin_panel_router
+from apps.bot.app.event_management import router as event_management_router
 from apps.bot.app.main import router as main_router
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,10 @@ async def run() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
     dispatcher = Dispatcher()
-    # Administration goes first so the bot-native user/sector menu owns those
-    # callbacks. The main router continues to handle all remaining workflows.
+    # Native extension routers go first so they own enhanced administration/event
+    # cards. The main router continues to handle the remaining product workflows.
     dispatcher.include_router(admin_panel_router)
+    dispatcher.include_router(event_management_router)
     dispatcher.include_router(main_router)
 
     allowed_updates = ["message", "callback_query", "chat_member"]
