@@ -32,6 +32,8 @@ services:
     build: .
     env_file: ${ENV_FILE:-.env}
     command: celery -A apps.worker.app.tasks.celery_app worker --beat --loglevel=INFO
+    volumes:
+      - ./data:/app/data
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
