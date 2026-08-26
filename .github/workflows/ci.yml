@@ -7,19 +7,37 @@ on:
 jobs:
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ss_bot
+          POSTGRES_USER: ss_bot
+          POSTGRES_PASSWORD: ss_bot
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U ss_bot -d ss_bot"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://ss_bot:ss_bot@localhost:5432/ss_bot
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install -e '.[dev]'
       - run: python -m ruff check .
+      - run: alembic upgrade head
       - run: python -m pytest
-  miniapp:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: apps/miniapp } }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22', cache: npm, cache-dependency-path: apps/miniapp/package.json }
-      - run: npm install
-      - run: npm run build
+      - run: >-
+          docker run -d --name ss-bot-ci-minio -p 9000:9000
+          -e MINIO_ROOT_USER=ss_bot -e MINIO_ROOT_PASSWORD=change-me-in-production
+          minio/minio:latest server /data
+      - run: until curl --fail --silent http://localhost:9000/minio/health/live; do sleep 1; done
+      - run: python -m pytest tests/test_storage_integration.py
+        env:
+          RUN_MINIO_INTEGRATION: "1"
+          S3_ENDPOINT_URL: http://localhost:9000
+          S3_ACCESS_KEY: ss_bot
+          S3_SECRET_KEY: change-me-in-production
+          S3_BUCKET: ss-bot-ci-integration
+      - run: docker compose config

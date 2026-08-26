@@ -31,6 +31,14 @@ def _client():
     )
 
 
+def _ensure_bucket(client) -> None:
+    settings = get_settings()
+    try:
+        client.head_bucket(Bucket=settings.s3_bucket)
+    except ClientError:
+        client.create_bucket(Bucket=settings.s3_bucket)
+
+
 def create_presigned_upload(
     task_id: uuid.UUID, filename: str, content_type: str
 ) -> tuple[str, str]:
@@ -40,10 +48,7 @@ def create_presigned_upload(
     safe_name = _SAFE_NAME.sub("_", filename)
     object_key = f"tasks/{task_id}/{uuid.uuid4()}-{safe_name}"
     settings = get_settings()
-    try:
-        client.head_bucket(Bucket=settings.s3_bucket)
-    except ClientError:
-        client.create_bucket(Bucket=settings.s3_bucket)
+    _ensure_bucket(client)
     url = client.generate_presigned_url(
         "put_object",
         Params={"Bucket": settings.s3_bucket, "Key": object_key, "ContentType": content_type},
@@ -70,7 +75,13 @@ def object_exists(object_key: str) -> bool:
     client = _client()
     if client is None:
         return False
-    client.head_object(Bucket=get_settings().s3_bucket, Key=object_key)
+    try:
+        client.head_object(Bucket=get_settings().s3_bucket, Key=object_key)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
     return True
 
 
@@ -104,6 +115,7 @@ def put_object(object_key: str, body: bytes, content_type: str) -> None:
     client = _client()
     if client is None:
         raise RuntimeError("Object storage is not configured")
+    _ensure_bucket(client)
     client.put_object(
         Bucket=get_settings().s3_bucket,
         Key=object_key,

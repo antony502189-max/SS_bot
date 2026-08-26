@@ -2,15 +2,15 @@
 
 Updated: 2026-08-25
 
-This is a greenfield implementation built from the target architecture. The repository now contains the end-to-end implementation; the remaining work is environment-specific integration proof and operational rollout.
+This document is superseded by `docs/final-bot-audit.md` and `docs/final-acceptance.md`. The product is Telegram-only; FastAPI remains internal infrastructure.
 
 ## Coverage audit
 
 | Phase | Status | Evidence / next work |
 | --- | --- | --- |
-| 0 Foundation | Implemented | Docker, API, bot, worker, Mini App, Alembic, CI, production Caddy edge configuration, readiness checks, and structured request logs exist. |
-| 1 Registration | Implemented | `/start`, profile capture, username readiness, Telegram init-data HMAC, signed sessions, authenticated `/me`, and audit records exist. |
-| 2 Roles/sectors | Implemented | Authenticated role/sector guards, user activation/deactivation, and administrator user management endpoints exist; administrators can manage people from the Mini App. |
+| 0 Foundation | In progress | Docker, API, bot, worker, Alembic, CI, production Caddy edge configuration, readiness checks, and structured request logs exist. |
+| 1 Registration | In progress | `/start`, profile capture, username refresh, and audit records exist. |
+| 2 Roles/sectors | In progress | Role/sector guards and administration services exist; Telegram administration flow requires completion. |
 | 3 Search | Implemented | Normalized person search and PostgreSQL trigram index migration are included. |
 | 4 Events | Implemented | Event and participant lifecycle, sector guards, archive metadata, exports, and retention controls exist. |
 | 5 Tasks | Implemented | Task creation/change/cancellation, member invariants, checklist, reports, and strict lifecycle transitions exist. |

@@ -4,14 +4,13 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from .config import get_settings
 from .db import engine
 from .models import Base
 from .observability import configure_logging
-from .routers import admin, auth, events, reports, sectors, tasks, users
+from .routers import admin, events, reports, sectors, tasks, users
 
 
 @asynccontextmanager
@@ -26,14 +25,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SS Bot API", version="0.1.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_settings().allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.include_router(auth.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(sectors.router, prefix="/api/v1")

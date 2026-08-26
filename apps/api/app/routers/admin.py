@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..dependencies import current_user
-from ..models import AuditLog, Role, Sector, User
+from ..models import AuditLog, Role, Sector, User, UserStatus
 from ..schemas import UserAdminUpdate, UserOut
 from ..services import audit, require_role
 
@@ -40,8 +40,19 @@ async def update_user(
         raise HTTPException(status_code=404, detail="User not found")
     changes = body.model_dump(exclude_unset=True)
     if "sector_id" in changes and changes["sector_id"]:
-        if not await session.get(Sector, changes["sector_id"]):
-            raise HTTPException(status_code=422, detail="Sector not found")
+        sector = await session.get(Sector, changes["sector_id"])
+        if not sector or not sector.is_active:
+            raise HTTPException(status_code=422, detail="An active sector is required")
+    resulting_role = changes.get("role", user.role)
+    resulting_sector_id = changes.get("sector_id", user.sector_id)
+    if resulting_role == Role.SECTOR_HEAD:
+        if not resulting_sector_id:
+            raise HTTPException(status_code=422, detail="A sector head must have an active sector")
+        sector = await session.get(Sector, resulting_sector_id)
+        if not sector or not sector.is_active:
+            raise HTTPException(status_code=422, detail="A sector head must have an active sector")
+    if changes.get("status") == UserStatus.INACTIVE and user.id == actor.id:
+        raise HTTPException(status_code=422, detail="You cannot deactivate your own account")
     if user.id == actor.id and changes.get("status") and changes["status"].value != "active":
         raise HTTPException(status_code=422, detail="You cannot deactivate your own account")
     old = {

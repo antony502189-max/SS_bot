@@ -48,19 +48,19 @@ def build_event_archive_pdf(event: Event, participants: list[User], tasks: list[
         leftMargin=18 * mm,
         topMargin=17 * mm,
         bottomMargin=17 * mm,
-        title=f"Archive - {event.title}",
+        title=f"Архив — {event.title}",
     )
-    story = [Paragraph("Event archive", title), Spacer(1, 5 * mm)]
+    story = [Paragraph("Архив события", title), Spacer(1, 5 * mm)]
     story.append(Paragraph(f"<b>{event.title}</b>", heading))
     details = [
-        ["Starts", event.starts_at.isoformat()],
-        ["Ends", event.ends_at.isoformat() if event.ends_at else "Not specified"],
-        ["Budget", str(event.budget) if event.budget is not None else "Not specified"],
+        ["Начало", event.starts_at.isoformat()],
+        ["Окончание", event.ends_at.isoformat() if event.ends_at else "Не указано"],
+        ["Бюджет", str(event.budget) if event.budget is not None else "Не указан"],
         [
-            "Retention until",
+            "Хранить до",
             event.retention_delete_at.isoformat()
             if event.retention_delete_at
-            else "Pending closure",
+            else "Будет определено после закрытия",
         ],
     ]
     table = Table(details, colWidths=(43 * mm, 125 * mm))
@@ -75,21 +75,21 @@ def build_event_archive_pdf(event: Event, participants: list[User], tasks: list[
             ]
         )
     )
-    story.extend([table, Spacer(1, 5 * mm), Paragraph("Participants", heading)])
+    story.extend([table, Spacer(1, 5 * mm), Paragraph("Участники", heading)])
     participant_text = ", ".join(user.full_name or str(user.telegram_id) for user in participants)
-    story.extend([Paragraph(participant_text or "No participants", body), Spacer(1, 4 * mm)])
-    story.append(Paragraph("Tasks and reports", heading))
+    story.extend([Paragraph(participant_text or "Нет участников", body), Spacer(1, 4 * mm)])
+    story.append(Paragraph("Задачи и отчёты", heading))
     for task in tasks:
         report = task.get("report")
         lines = [
             f"<b>{task['title']}</b> - {task['status']}",
-            f"Deadline: {task['deadline'].isoformat()}",
+            f"Срок: {task['deadline'].isoformat()}",
         ]
         if report:
             lines.extend(
                 [
-                    f"Report: {report['comment'] or 'No comment'}",
-                    f"Photos: {report['photo_count']}",
+                    f"Отчёт: {report['comment'] or 'Без комментария'}",
+                    f"Фотографий: {report['photo_count']}",
                 ]
             )
         story.extend([Paragraph("<br/>".join(lines), body), Spacer(1, 3 * mm)])

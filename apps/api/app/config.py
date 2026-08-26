@@ -11,10 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "sqlite+aiosqlite:///./ss_bot.db"
     redis_url: str = "redis://localhost:6379/0"
-    cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
-    app_session_secret: str = ""
-    session_ttl_minutes: int = Field(default=480, ge=5, le=1440)
     task_deadline_reminder_hours: int = Field(default=24, ge=1, le=168)
     archive_retention_days: int = Field(default=365, ge=1, le=3650)
     archive_delete_warning_days: int = Field(default=30, ge=1, le=365)
@@ -23,7 +20,6 @@ class Settings(BaseSettings):
     telegram_webhook_url: str = ""
     telegram_webhook_path: str = "/webhook"
     telegram_webhook_secret: str = ""
-    mini_app_url: str = "http://localhost:5173"
     telegram_api_id: int | None = None
     telegram_api_hash: str = ""
     telegram_service_phone: str = ""
@@ -42,10 +38,6 @@ class Settings(BaseSettings):
     def empty_telegram_api_id_is_unset(cls, value: object) -> object:
         """Allow the documented blank MTProto setting until group automation is configured."""
         return None if value == "" else value
-
-    @property
-    def allowed_origins(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
     def bootstrap_admin_ids(self) -> set[int]:

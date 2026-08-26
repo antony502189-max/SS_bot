@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import ReportStatus, Role, TaskKind, TaskStatus, UserStatus
 
@@ -70,6 +70,12 @@ class EventCreate(BaseModel):
     sector_id: uuid.UUID | None = None
     participant_ids: list[uuid.UUID] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def end_must_not_precede_start(self) -> "EventCreate":
+        if self.ends_at and self.ends_at < self.starts_at:
+            raise ValueError("Event end must not be before its start")
+        return self
+
 
 class EventOut(BaseModel):
     id: uuid.UUID
@@ -93,6 +99,12 @@ class EventUpdate(BaseModel):
     ends_at: datetime | None = None
     budget: float | None = Field(default=None, ge=0)
     sector_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def updated_end_must_not_precede_start(self) -> "EventUpdate":
+        if self.starts_at and self.ends_at and self.ends_at < self.starts_at:
+            raise ValueError("Event end must not be before its start")
+        return self
 
 
 class EventParticipantCreate(BaseModel):
@@ -268,4 +280,17 @@ class ReportOut(BaseModel):
     returned_at: datetime | None
     approved_at: datetime | None
     photos: list[PhotoOut] = Field(default_factory=list)
+    model_config = {"from_attributes": True}
+
+
+class ReportOut(BaseModel):
+    id: uuid.UUID
+    status: ReportStatus
+    comment: str | None
+    approval_comment: str | None
+    submitted_by_id: uuid.UUID
+    submitted_at: datetime | None
+    approved_at: datetime | None
+    photo_count: int = 0
+
     model_config = {"from_attributes": True}

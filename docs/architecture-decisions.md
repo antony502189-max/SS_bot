@@ -10,9 +10,8 @@ Task creation writes `TASK_CREATED` in the same transaction as task members and 
 
 ## ADR-003: Bot token is not a service-account credential
 
-The standard Bot API bot handles registration, direct messages, Mini App validation, and membership updates. A distinct MTProto service account handles supergroup lifecycle work. Their credentials are separate environment secrets.
+The standard Bot API bot handles registration, direct messages, and membership updates. A distinct MTProto service account handles supergroup lifecycle work. Their credentials are separate environment secrets.
 
 ## ADR-004: Photo metadata follows storage verification
 
 The API issues a short-lived private S3 PUT URL, then accepts a photo record only after a `head_object` verification. A report is limited to five JPEG, PNG, or WebP files of at most 10 MiB each.
-
