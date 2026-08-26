@@ -263,7 +263,11 @@ def people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMark
         label = user.full_name or f"@{user.telegram_username or ''}"
         prefix = "✅" if str(user.id) in selected else "➕"
         rows.append(
-            [InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"issue:person:{user.id}")]
+            [
+                InlineKeyboardButton(
+                    text=f"{prefix} {label}", callback_data=f"issue:person:{user.id}"
+                )
+            ]
         )
     rows.append(
         [InlineKeyboardButton(text=f"Готово ({len(selected)})", callback_data="issue:people:done")]
