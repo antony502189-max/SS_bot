@@ -756,12 +756,14 @@ async def finish_task_people(message: Message, state: FSMContext) -> bool:
     if data["kind"] == "group":
         await state.set_state(TaskIssue.leader)
         await message.answer(
-            "Выберите руководителя задачи.",
+            "Состав зафиксирован. Следующий шаг: выберите руководителя задачи.",
             reply_markup=await leader_keyboard(data["member_ids"]),
         )
     else:
         await state.set_state(TaskIssue.deadline)
-        await message.answer("Введите дедлайн: ДД.ММ.ГГГГ ЧЧ:ММ.")
+        await message.answer(
+            "Состав зафиксирован. Следующий шаг: введите дедлайн: ДД.ММ.ГГГГ ЧЧ:ММ."
+        )
     return True
 
 
@@ -787,8 +789,9 @@ async def issue_task_people(message: Message, state: FSMContext) -> None:
         selected.add(str(user.id))
         await state.update_data(member_ids=list(selected))
         await message.answer(
-            f"✅ Добавлен: {display_user(user)}. Всего: {len(selected)}. "
-            "Введите следующего или «-»."
+            f"✅ Добавлен: {display_user(user)}. Всего: {len(selected)}.\n\n"
+            "Это только состав задачи — сама задача ещё не создана. "
+            "Введите следующего исполнителя или отправьте «-», чтобы перейти к дедлайну."
         )
         return
     await message.answer(
@@ -840,8 +843,9 @@ async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
     )
     await callback.answer(f"{action}: {display_user(selected_user)}")
     await callback.message.answer(
-        f"{action}: {display_user(selected_user)}. Всего: {len(selected)}. "
-        "Введите следующего или «-»."
+        f"{action}: {display_user(selected_user)}. Всего: {len(selected)}.\n\n"
+        "Это только состав задачи — сама задача ещё не создана. "
+        "Введите следующего исполнителя или отправьте «-», чтобы продолжить."
     )
 
 
