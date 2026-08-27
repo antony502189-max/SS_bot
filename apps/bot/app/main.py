@@ -77,6 +77,7 @@ USER_TIMEZONE = ZoneInfo("Europe/Minsk")
 logger = logging.getLogger(__name__)
 
 OPEN_TASK_STATUSES = {TaskStatus.ACTIVE, TaskStatus.RETURNED, TaskStatus.OVERDUE}
+USER_DIRECTORY_PAGE_SIZE = 15
 STATUS_LABELS = {
     TaskStatus.DRAFT: "черновик",
     TaskStatus.ACTIVE: "активна",
@@ -152,7 +153,12 @@ def main_keyboard(user: User) -> ReplyKeyboardMarkup:
     if user.role in {Role.ADMIN, Role.SECTOR_HEAD}:
         rows.append([KeyboardButton(text="➕ Выдать задачу"), KeyboardButton(text="🗓 Мероприятия")])
     if user.role == Role.ADMIN:
-        rows.append([KeyboardButton(text="⚙️ Администрирование")])
+        rows.append(
+            [
+                KeyboardButton(text="⚙️ Администрирование"),
+                KeyboardButton(text="👥 База участников"),
+            ]
+        )
     rows.append([KeyboardButton(text="ℹ️ Помощь")])
     return ReplyKeyboardMarkup(
         keyboard=rows,
@@ -182,7 +188,12 @@ def display_user(user: User) -> str:
     return f"{name}{username}"[:52]
 
 
-def people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
+def people_search_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
+    """Render search results without ending the accumulating selection flow.
+
+    A manager can search again after adding a person.  The selected IDs live in
+    FSM storage, not in the particular result message shown by Telegram.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     for user in users:
         prefix = "✅" if str(user.id) in selected else "➕"
@@ -194,10 +205,21 @@ def people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMark
                 )
             ]
         )
-    rows.append(
-        [InlineKeyboardButton(text=f"Готово ({len(selected)})", callback_data="issue:people:done")]
-    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def is_exact_user_match(user: User, query: str) -> bool:
+    """Return whether a typed name or username identifies one user exactly."""
+    cleaned = query.strip().lstrip("@").casefold()
+    if not cleaned:
+        return False
+    return (
+        bool(user.telegram_username and user.telegram_username.casefold() == cleaned)
+        or bool(
+            user.normalized_full_name
+            and user.normalized_full_name == normalize_full_name(query)
+        )
+    )
 
 
 def event_people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
@@ -705,33 +727,78 @@ async def issue_task_kind(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(kind=kind, member_ids=[], leader_id=None)
     await state.set_state(TaskIssue.people)
     await callback.message.answer(
-        "Введите часть ФИО или @username исполнителя. "
-        "После поиска выбирайте людей кнопками и нажмите «Готово»."
+        "Добавляйте исполнителей по одному: введите полное ФИО или @username. "
+        "При точном совпадении человек добавится сразу, иначе выберите его кнопкой. "
+        "Когда набор закончен, отправьте «-»."
     )
     await callback.answer()
+
+
+async def finish_task_people(message: Message, state: FSMContext) -> bool:
+    """Move the task wizard on after the manager sends a dash."""
+    data = await state.get_data()
+    count = len(data.get("member_ids", []))
+    if count == 0 or (data["kind"] == "individual" and count != 1):
+        await message.answer(
+            "Для личной задачи нужен ровно один исполнитель, "
+            "для групповой — минимум один."
+        )
+        return False
+    if data["kind"] == "group":
+        await state.set_state(TaskIssue.leader)
+        await message.answer(
+            "Выберите руководителя задачи.",
+            reply_markup=await leader_keyboard(data["member_ids"]),
+        )
+    else:
+        await state.set_state(TaskIssue.deadline)
+        await message.answer("Введите дедлайн: ДД.ММ.ГГГГ ЧЧ:ММ.")
+    return True
 
 
 @router.message(TaskIssue.people, F.text)
 async def issue_task_people(message: Message, state: FSMContext) -> None:
     actor = await sync_user(message)
     data = await state.get_data()
+    query = message.text.strip()
+    if query == "-":
+        await finish_task_people(message, state)
+        return
     users = await search_users(actor, message.text, exclude_ids={actor.id})
     if not users:
         await message.answer("Никого не найдено. Введите другой запрос.")
         return
+    exact_users = [user for user in users if is_exact_user_match(user, query)]
+    selected = set(data.get("member_ids", []))
+    if len(exact_users) == 1:
+        user = exact_users[0]
+        if str(user.id) in selected:
+            await message.answer(f"{display_user(user)} уже добавлен. Введите следующего или «-».")
+            return
+        selected.add(str(user.id))
+        await state.update_data(member_ids=list(selected))
+        await message.answer(
+            f"✅ Добавлен: {display_user(user)}. Всего: {len(selected)}. "
+            "Введите следующего или «-»."
+        )
+        return
     await message.answer(
-        "Выберите исполнителей:",
-        reply_markup=people_keyboard(users, set(data.get("member_ids", []))),
+        "Найдено несколько вариантов. Выберите исполнителя:",
+        reply_markup=people_search_keyboard(users, selected),
     )
 
 
 @router.callback_query(TaskIssue.people, F.data.startswith("issue:person:"))
 async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
+    actor = await sync_callback_user(callback)
     user_id = callback.data.rsplit(":", 1)[-1]
     data = await state.get_data()
     selected = set(data.get("member_ids", []))
-    selected.symmetric_difference_update({user_id})
-    await state.update_data(member_ids=list(selected))
+    try:
+        selected_id = uuid.UUID(user_id)
+    except ValueError:
+        await callback.answer("Некорректный пользователь.", show_alert=True)
+        return
     visible_ids = [
         uuid.UUID(button.callback_data.rsplit(":", 1)[-1])
         for row in callback.message.reply_markup.inline_keyboard
@@ -742,8 +809,31 @@ async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
         users = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
     by_id = {user.id: user for user in users}
     ordered = [by_id[item] for item in visible_ids if item in by_id]
-    await callback.message.edit_reply_markup(reply_markup=people_keyboard(ordered, selected))
-    await callback.answer("Выбор обновлён")
+    selected_user = by_id.get(selected_id)
+    if not selected_user or selected_user.status != UserStatus.ACTIVE:
+        await callback.answer("Пользователь больше недоступен.", show_alert=True)
+        return
+    if selected_user.id == actor.id:
+        await callback.answer("Нельзя назначить задачу самому себе.", show_alert=True)
+        return
+    if actor.role == Role.SECTOR_HEAD and selected_user.sector_id != actor.sector_id:
+        await callback.answer("Можно выбирать только участников своего сектора.", show_alert=True)
+        return
+    if user_id in selected:
+        selected.remove(user_id)
+        action = "Исключён"
+    else:
+        selected.add(user_id)
+        action = "Добавлен"
+    await state.update_data(member_ids=list(selected))
+    await callback.message.edit_reply_markup(
+        reply_markup=people_search_keyboard(ordered, selected)
+    )
+    await callback.answer(f"{action}: {display_user(selected_user)}")
+    await callback.message.answer(
+        f"{action}: {display_user(selected_user)}. Всего: {len(selected)}. "
+        "Введите следующего или «-»."
+    )
 
 
 async def leader_keyboard(member_ids: list[str]) -> InlineKeyboardMarkup:
@@ -767,23 +857,8 @@ async def leader_keyboard(member_ids: list[str]) -> InlineKeyboardMarkup:
 
 @router.callback_query(TaskIssue.people, F.data == "issue:people:done")
 async def issue_task_people_done(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    count = len(data.get("member_ids", []))
-    if count == 0 or (data["kind"] == "individual" and count != 1):
-        await callback.answer(
-            "Для личной задачи нужен один исполнитель, для групповой — минимум один.",
-            show_alert=True,
-        )
-        return
-    if data["kind"] == "group":
-        await state.set_state(TaskIssue.leader)
-        await callback.message.answer(
-            "Выберите руководителя задачи.",
-            reply_markup=await leader_keyboard(data["member_ids"]),
-        )
-    else:
-        await state.set_state(TaskIssue.deadline)
-        await callback.message.answer("Введите дедлайн: ДД.ММ.ГГГГ ЧЧ:ММ.")
+    # Compatibility for selection messages sent before the updated flow was deployed.
+    await finish_task_people(callback.message, state)
     await callback.answer()
 
 
@@ -2090,27 +2165,85 @@ async def event_retention_finish(message: Message, state: FSMContext) -> None:
 # -------------------- Administration --------------------
 
 
+async def build_user_directory(
+    page: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build a paginated directory so administrators can browse every user."""
+    async with SessionLocal() as session:
+        total = int(await session.scalar(select(func.count()).select_from(User)) or 0)
+        pages = max(1, (total + USER_DIRECTORY_PAGE_SIZE - 1) // USER_DIRECTORY_PAGE_SIZE)
+        page = max(0, min(page, pages - 1))
+        users = list(
+            (
+                await session.scalars(
+                    select(User)
+                    .order_by(User.full_name, User.telegram_username)
+                    .offset(page * USER_DIRECTORY_PAGE_SIZE)
+                    .limit(USER_DIRECTORY_PAGE_SIZE)
+                )
+            ).all()
+        )
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{display_user(user)[:34]} · {ROLE_LABELS[user.role]}",
+                callback_data=f"admuser:{user.id}:{page}",
+            )
+        ]
+        for user in users
+    ]
+    navigation: list[InlineKeyboardButton] = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton(text="← Назад", callback_data=f"users:page:{page - 1}"))
+    if page < pages - 1:
+        navigation.append(InlineKeyboardButton(text="Вперёд →", callback_data=f"users:page:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    return (
+        f"👥 База участников\nВсего: {total}\nСтраница {page + 1} из {pages}.\n"
+        "Нажмите на участника, чтобы открыть карточку.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+async def show_user_directory(message: Message, page: int = 0) -> None:
+    text, keyboard = await build_user_directory(page)
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.message(F.text == "👥 База участников")
+async def user_directory(message: Message) -> None:
+    actor = await sync_user(message)
+    if actor.role != Role.ADMIN:
+        await message.answer("Недостаточно прав.")
+        return
+    await show_user_directory(message)
+
+
+@router.callback_query(F.data.startswith("users:page:"))
+async def user_directory_page(callback: CallbackQuery) -> None:
+    actor = await sync_callback_user(callback)
+    if actor.role != Role.ADMIN:
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    try:
+        page = int(callback.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer("Некорректная страница.", show_alert=True)
+        return
+    text, keyboard = await build_user_directory(page)
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
 @router.message(F.text == "⚙️ Администрирование")
 async def administration(message: Message) -> None:
     actor = await sync_user(message)
     if actor.role != Role.ADMIN:
         await message.answer("Недостаточно прав.")
         return
-    async with SessionLocal() as session:
-        users = list((await session.scalars(select(User).order_by(User.full_name).limit(100))).all())
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"{display_user(user)[:35]} · {ROLE_LABELS[user.role]}",
-                callback_data=f"admuser:{user.id}",
-            )
-        ]
-        for user in users[:40]
-    ]
-    await message.answer(
-        "⚙️ Управление пользователями",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
+    await show_user_directory(message)
 
 
 @router.callback_query(F.data.startswith("admuser:"))
@@ -2119,7 +2252,13 @@ async def admin_user_detail(callback: CallbackQuery) -> None:
     if actor.role != Role.ADMIN:
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
-    user_id = uuid.UUID(callback.data.split(":", 1)[1])
+    parts = callback.data.split(":")
+    try:
+        user_id = uuid.UUID(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+    except (IndexError, ValueError):
+        await callback.answer("Некорректный пользователь.", show_alert=True)
+        return
     async with SessionLocal() as session:
         user = await session.get(User, user_id)
         sector = await session.get(Sector, user.sector_id) if user and user.sector_id else None
@@ -2145,6 +2284,12 @@ async def admin_user_detail(callback: CallbackQuery) -> None:
             InlineKeyboardButton(
                 text="Активировать" if user.status == UserStatus.INACTIVE else "Деактивировать",
                 callback_data=f"ustat:{user.id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="← К базе участников",
+                callback_data=f"users:page:{page}",
             )
         ],
     ]

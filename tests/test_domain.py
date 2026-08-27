@@ -42,7 +42,12 @@ from apps.api.app.services import (
     refresh_event_retention,
     task_cleanup_at,
 )
-from apps.bot.app.main import parse_input_datetime, people_keyboard
+from apps.bot.app.main import (
+    is_exact_user_match,
+    main_keyboard,
+    parse_input_datetime,
+    people_search_keyboard,
+)
 from apps.telegram_user_service.app.client import (
     TelegramResult,
     TelegramResultKind,
@@ -106,17 +111,33 @@ def test_bot_dates_use_minsk_time() -> None:
     assert parse_input_datetime("31.12.2026 12:00") == datetime(2026, 12, 31, 9, tzinfo=UTC)
 
 
-def test_people_keyboard_keeps_multiple_selected_people() -> None:
+def test_people_search_keyboard_keeps_selection_without_a_done_button() -> None:
     first = active_user(101, "Анна Тест")
     second = active_user(102, "Борис Тест")
     first.id = uuid.uuid4()
     second.id = uuid.uuid4()
 
-    keyboard = people_keyboard([first, second], {str(first.id), str(second.id)})
+    keyboard = people_search_keyboard([first, second], {str(first.id), str(second.id)})
 
-    assert keyboard.inline_keyboard[-1][0].text == "Готово (2)"
+    assert len(keyboard.inline_keyboard) == 2
     assert keyboard.inline_keyboard[0][0].text.startswith("✅ Анна Тест")
     assert "@user101" in keyboard.inline_keyboard[0][0].text
+
+
+def test_exact_user_match_accepts_full_name_or_username_only() -> None:
+    user = active_user(101, "Анна Тест")
+
+    assert is_exact_user_match(user, "Анна Тест")
+    assert is_exact_user_match(user, "@user101")
+    assert not is_exact_user_match(user, "Анна")
+
+
+def test_admin_keyboard_contains_participant_directory_button() -> None:
+    admin = active_user(1, "Администратор", role=Role.ADMIN)
+
+    labels = [button.text for row in main_keyboard(admin).keyboard for button in row]
+
+    assert "👥 База участников" in labels
 
 
 def test_group_cleanup_runs_each_minute() -> None:
