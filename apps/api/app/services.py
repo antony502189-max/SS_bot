@@ -59,6 +59,8 @@ async def refresh_event_retention(session: AsyncSession, event_id: uuid.UUID | N
         if timestamp is not None
     ]
     if not closed_at:
+        event.retention_delete_at = None
+        event.retention_warning_sent_at = None
         return
     event.retention_delete_at = max(closed_at) + timedelta(
         days=get_settings().archive_retention_days

@@ -33,6 +33,7 @@ from apps.api.app.models import (
 )
 from apps.api.app.photos import inspect_photo
 from apps.api.app.routers import reports as report_routes
+from apps.api.app.routers import tasks as task_routes
 from apps.api.app.schemas import EventCreate, ReportCreate, ReportDecision, TaskCreate
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import (
@@ -283,6 +284,60 @@ async def test_creator_is_auto_added_once(session) -> None:
     assert [(notification.user_id, notification.type) for notification in notifications] == [
         (assignee.id, "TASK_ASSIGNED")
     ]
+
+
+@pytest.mark.asyncio
+async def test_admin_can_permanently_delete_an_accidental_task(session) -> None:
+    admin = active_user(1, "Admin User", role=Role.ADMIN)
+    assignee = active_user(2, "Worker User")
+    session.add_all([admin, assignee])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        admin,
+        TaskCreate(
+            title="Accidental task",
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            member_ids=[assignee.id],
+        ),
+        "delete-accidental-task",
+    )
+    task_id = task.id
+
+    await task_routes.delete_task(task_id, admin, session)
+
+    assert await session.get(Task, task_id) is None
+    notices = list((await session.scalars(select(Notification))).all())
+    assert [(notice.user_id, notice.type, notice.task_id) for notice in notices] == [
+        (assignee.id, "TASK_DELETED", None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permanent_task_delete_rejects_existing_working_group(session) -> None:
+    admin = active_user(10, "Admin User", role=Role.ADMIN)
+    assignee = active_user(11, "Worker User")
+    session.add_all([admin, assignee])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        admin,
+        TaskCreate(
+            title="Task with group",
+            kind=TaskKind.GROUP,
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            leader_id=assignee.id,
+            member_ids=[assignee.id],
+        ),
+        "delete-task-with-group",
+    )
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    assert chat is not None
+    chat.telegram_chat_id = -1001234567890
+    await session.flush()
+
+    with pytest.raises(HTTPException, match="рабочая группа"):
+        await task_routes.delete_task(task.id, admin, session)
 
 
 @pytest.mark.asyncio

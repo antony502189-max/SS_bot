@@ -106,6 +106,8 @@ def notification_text(notification: Notification) -> str:
         return f"Задача просрочена: «{title}»."
     if notification.type == "TASK_CANCELLED":
         return f"Задача отменена: {title}"
+    if notification.type == "TASK_DELETED":
+        return f"Задача удалена администратором: {title}"
     if notification.type == "TASK_SUBMITTED":
         return f"По задаче отправлен отчёт: {title}"
     if notification.type == "TASK_COMPLETED":

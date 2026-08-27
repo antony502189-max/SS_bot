@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -10,6 +10,7 @@ from ..dependencies import current_user
 from ..models import (
     ChatStatus,
     MembershipState,
+    Notification,
     OutboxEvent,
     Role,
     Task,
@@ -18,6 +19,7 @@ from ..models import (
     TaskChecklistItem,
     TaskKind,
     TaskMember,
+    TaskReport,
     TaskStatus,
     User,
 )
@@ -519,6 +521,69 @@ async def cancel_task(
     await session.commit()
     await session.refresh(task)
     return task
+
+
+@router.delete("/{task_id}", status_code=204)
+async def delete_task(
+    task_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Permanently delete a task that has not started accumulating business data."""
+    await require_role(session, actor.id, Role.ADMIN)
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    report_exists = await session.scalar(
+        select(TaskReport.id).where(TaskReport.task_id == task.id)
+    )
+    if report_exists:
+        raise HTTPException(
+            status_code=422,
+            detail="У задачи есть отчёт. Для неё доступна только отмена.",
+        )
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    if chat and chat.telegram_chat_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Для задачи уже создана рабочая группа. "
+                "Используйте отмену — группа будет удалена автоматически."
+            ),
+        )
+
+    title = task.title
+    event_id = task.event_id
+    member_ids = set(
+        (
+            await session.scalars(
+                select(TaskMember.user_id).where(TaskMember.task_id == task.id)
+            )
+        ).all()
+    )
+    # Do not deliver delayed assignment reminders for a task that no longer exists.
+    await session.execute(delete(Notification).where(Notification.task_id == task.id))
+    await session.execute(
+        delete(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "task",
+            OutboxEvent.aggregate_id == str(task.id),
+        )
+    )
+    await session.delete(task)
+    await session.flush()
+    await refresh_event_retention(session, event_id)
+    for user_id in member_ids - {actor.id}:
+        session.add(
+            Notification(
+                user_id=user_id,
+                event_id=event_id,
+                type="TASK_DELETED",
+                payload={"title": title},
+            )
+        )
+    await audit(session, actor.id, "task.deleted", "task", task_id, {"title": title})
+    await session.commit()
 
 
 @router.patch("/{task_id}/checklist/{item_id}")

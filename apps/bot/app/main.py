@@ -475,6 +475,15 @@ async def build_task_view(actor: User, task_id: uuid.UUID) -> tuple[str, InlineK
                 InlineKeyboardButton(text="🛑 Отменить", callback_data=f"tcancel:{task.id}"),
             ]
         )
+    if actor.role == Role.ADMIN:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить навсегда",
+                    callback_data=f"tdel:{task.id}",
+                )
+            ]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ К задачам", callback_data="tl:open")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1300,6 +1309,47 @@ async def task_cancel_finish(callback: CallbackQuery) -> None:
             await task_routes.cancel_task(task_id, actor, session)
         await callback.answer("Задача отменена")
         await show_task(callback, actor, task_id)
+    except Exception as exc:
+        await answer_http_error(callback, exc)
+
+
+@router.callback_query(F.data.startswith("tdel:"))
+async def task_delete_confirm(callback: CallbackQuery) -> None:
+    actor = await sync_callback_user(callback)
+    if actor.role != Role.ADMIN:
+        await callback.answer("Только администратор может удалять задачи.", show_alert=True)
+        return
+    task_id = callback.data.split(":", 1)[1]
+    await callback.message.edit_text(
+        "🗑 Удалить задачу безвозвратно?\n\n"
+        "Задача исчезнет из базы. Удаление доступно, пока у неё нет отчёта "
+        "и созданной рабочей группы.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Да, удалить", callback_data=f"tdelok:{task_id}"),
+                    InlineKeyboardButton(text="Нет", callback_data=f"task:{task_id}"),
+                ]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tdelok:"))
+async def task_delete_finish(callback: CallbackQuery) -> None:
+    actor = await sync_callback_user(callback)
+    if actor.role != Role.ADMIN:
+        await callback.answer("Только администратор может удалять задачи.", show_alert=True)
+        return
+    try:
+        task_id = uuid.UUID(callback.data.split(":", 1)[1])
+        async with SessionLocal() as session:
+            await task_routes.delete_task(task_id, actor, session)
+        await callback.message.edit_text("🗑 Задача удалена из базы.")
+        await callback.answer("Задача удалена")
+    except (ValueError, IndexError):
+        await callback.answer("Некорректная задача.", show_alert=True)
     except Exception as exc:
         await answer_http_error(callback, exc)
 
