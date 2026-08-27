@@ -188,7 +188,13 @@ def display_user(user: User) -> str:
     return f"{name}{username}"[:52]
 
 
-def people_search_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
+def people_search_keyboard(
+    users: list[User],
+    selected: set[str],
+    *,
+    person_callback_prefix: str = "issue:person",
+    done_callback: str = "issue:people:done",
+) -> InlineKeyboardMarkup:
     """Render search results without ending the accumulating selection flow.
 
     A manager can search again after adding a person.  The selected IDs live in
@@ -201,10 +207,18 @@ def people_search_keyboard(users: list[User], selected: set[str]) -> InlineKeybo
             [
                 InlineKeyboardButton(
                     text=f"{prefix} {display_user(user)}",
-                    callback_data=f"issue:person:{user.id}",
+                    callback_data=f"{person_callback_prefix}:{user.id}",
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"✅ Закончить выбор ({len(selected)})",
+                callback_data=done_callback,
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -223,20 +237,68 @@ def is_exact_user_match(user: User, query: str) -> bool:
 
 
 def event_people_keyboard(users: list[User], selected: set[str]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for user in users:
-        prefix = "✅" if str(user.id) in selected else "➕"
+    return people_search_keyboard(
+        users,
+        selected,
+        person_callback_prefix="evp",
+        done_callback="evp:done",
+    )
+
+
+def people_picker_mode_keyboard(
+    *,
+    all_callback: str,
+    search_callback: str,
+    done_callback: str | None = None,
+    selected_count: int = 0,
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="👥 Открыть всю базу", callback_data=all_callback),
+            InlineKeyboardButton(text="🔎 Искать", callback_data=search_callback),
+        ]
+    ]
+    if done_callback:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{prefix} {display_user(user)}",
-                    callback_data=f"evp:{user.id}",
+                    text=f"✅ Закончить выбор ({selected_count})",
+                    callback_data=done_callback,
                 )
             ]
         )
-    rows.append(
-        [InlineKeyboardButton(text=f"Создать ({len(selected)})", callback_data="evp:done")]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def people_all_keyboard(
+    users: list[User],
+    selected: set[str],
+    page: int,
+    pages: int,
+    *,
+    person_callback_prefix: str,
+    done_callback: str,
+    page_callback_prefix: str,
+) -> InlineKeyboardMarkup:
+    keyboard = people_search_keyboard(
+        users,
+        selected,
+        person_callback_prefix=person_callback_prefix,
+        done_callback=done_callback,
     )
+    rows = keyboard.inline_keyboard[:-1]
+    navigation: list[InlineKeyboardButton] = []
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(text="← Назад", callback_data=f"{page_callback_prefix}:{page - 1}")
+        )
+    if page < pages - 1:
+        navigation.append(
+            InlineKeyboardButton(text="Вперёд →", callback_data=f"{page_callback_prefix}:{page + 1}")
+        )
+    if navigation:
+        rows.append(navigation)
+    rows.append(keyboard.inline_keyboard[-1])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -315,6 +377,61 @@ async def search_users(actor: User, query: str, *, exclude_ids: set[uuid.UUID] |
         if exclude_ids:
             statement = statement.where(User.id.not_in(exclude_ids))
         return list((await session.scalars(statement)).all())
+
+
+async def active_users_page(
+    actor: User,
+    page: int,
+    *,
+    exclude_ids: set[uuid.UUID] | None = None,
+) -> tuple[list[User], int, int]:
+    """Load one page of selectable users and the normalized page count."""
+    async with SessionLocal() as session:
+        filters = [User.status == UserStatus.ACTIVE]
+        if actor.role == Role.SECTOR_HEAD:
+            filters.append(User.sector_id == actor.sector_id)
+        if exclude_ids:
+            filters.append(User.id.not_in(exclude_ids))
+        total = int(await session.scalar(select(func.count()).select_from(User).where(*filters)) or 0)
+        pages = max(1, (total + USER_DIRECTORY_PAGE_SIZE - 1) // USER_DIRECTORY_PAGE_SIZE)
+        page = max(0, min(page, pages - 1))
+        users = list(
+            (
+                await session.scalars(
+                    select(User)
+                    .where(*filters)
+                    .order_by(User.full_name, User.telegram_username)
+                    .offset(page * USER_DIRECTORY_PAGE_SIZE)
+                    .limit(USER_DIRECTORY_PAGE_SIZE)
+                )
+            ).all()
+        )
+    return users, page, pages
+
+
+def people_all_view(
+    users: list[User],
+    selected: set[str],
+    page: int,
+    pages: int,
+    *,
+    person_callback_prefix: str,
+    done_callback: str,
+    page_callback_prefix: str,
+) -> tuple[str, InlineKeyboardMarkup]:
+    return (
+        f"👥 Все участники\nСтраница {page + 1} из {pages}. "
+        f"Выбрано: {len(selected)}.\nНажимайте на людей, затем «Закончить выбор».",
+        people_all_keyboard(
+            users,
+            selected,
+            page,
+            pages,
+            person_callback_prefix=person_callback_prefix,
+            done_callback=done_callback,
+            page_callback_prefix=page_callback_prefix,
+        ),
+    )
 
 
 def task_filters_keyboard() -> InlineKeyboardMarkup:
@@ -733,12 +850,23 @@ async def issue_task_event(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(TaskIssue.kind, F.data.startswith("issue:kind:"))
 async def issue_task_kind(callback: CallbackQuery, state: FSMContext) -> None:
     kind = callback.data.rsplit(":", 1)[-1]
-    await state.update_data(kind=kind, member_ids=[], leader_id=None)
+    await state.update_data(
+        kind=kind,
+        member_ids=[],
+        leader_id=None,
+        people_picker_mode="search",
+        people_picker_page=0,
+    )
     await state.set_state(TaskIssue.people)
     await callback.message.answer(
         "Добавляйте исполнителей по одному: введите полное ФИО или @username. "
         "При точном совпадении человек добавится сразу, иначе выберите его кнопкой. "
-        "Когда набор закончен, отправьте «-»."
+        "Когда набор закончен, отправьте «-» или нажмите «Закончить выбор».",
+        reply_markup=people_picker_mode_keyboard(
+            all_callback="issue:people:all:0",
+            search_callback="issue:people:search",
+            done_callback="issue:people:done",
+        ),
     )
     await callback.answer()
 
@@ -775,6 +903,7 @@ async def issue_task_people(message: Message, state: FSMContext) -> None:
     if query == "-":
         await finish_task_people(message, state)
         return
+    await state.update_data(people_picker_mode="search", people_picker_page=0)
     users = await search_users(actor, message.text, exclude_ids={actor.id})
     if not users:
         await message.answer("Никого не найдено. Введите другой запрос.")
@@ -791,13 +920,54 @@ async def issue_task_people(message: Message, state: FSMContext) -> None:
         await message.answer(
             f"✅ Добавлен: {display_user(user)}. Всего: {len(selected)}.\n\n"
             "Это только состав задачи — сама задача ещё не создана. "
-            "Введите следующего исполнителя или отправьте «-», чтобы перейти к дедлайну."
+            "Введите следующего исполнителя или нажмите «Закончить выбор».",
+            reply_markup=people_picker_mode_keyboard(
+                all_callback="issue:people:all:0",
+                search_callback="issue:people:search",
+                done_callback="issue:people:done",
+                selected_count=len(selected),
+            ),
         )
         return
     await message.answer(
         "Найдено несколько вариантов. Выберите исполнителя:",
         reply_markup=people_search_keyboard(users, selected),
     )
+
+
+@router.callback_query(TaskIssue.people, F.data == "issue:people:search")
+async def issue_task_people_search_mode(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(people_picker_mode="search", people_picker_page=0)
+    await callback.message.answer(
+        "🔎 Режим поиска. Введите часть ФИО или @username. "
+        "Для завершения нажмите «Закончить выбор» или отправьте «-»."
+    )
+    await callback.answer()
+
+
+@router.callback_query(TaskIssue.people, F.data.startswith("issue:people:all:"))
+async def issue_task_people_all(callback: CallbackQuery, state: FSMContext) -> None:
+    actor = await sync_callback_user(callback)
+    try:
+        page = int(callback.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer("Некорректная страница.", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = set(data.get("member_ids", []))
+    users, page, pages = await active_users_page(actor, page, exclude_ids={actor.id})
+    await state.update_data(people_picker_mode="all", people_picker_page=page)
+    text, keyboard = people_all_view(
+        users,
+        selected,
+        page,
+        pages,
+        person_callback_prefix="issue:person",
+        done_callback="issue:people:done",
+        page_callback_prefix="issue:people:all",
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 
 @router.callback_query(TaskIssue.people, F.data.startswith("issue:person:"))
@@ -817,8 +987,16 @@ async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
         for button in row
         if button.callback_data and button.callback_data.startswith("issue:person:")
     ]
-    async with SessionLocal() as session:
-        users = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
+    if data.get("people_picker_mode") == "all":
+        users, page, pages = await active_users_page(
+            actor,
+            int(data.get("people_picker_page", 0)),
+            exclude_ids={actor.id},
+        )
+    else:
+        async with SessionLocal() as session:
+            users = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
+        page = pages = 0
     by_id = {user.id: user for user in users}
     ordered = [by_id[item] for item in visible_ids if item in by_id]
     selected_user = by_id.get(selected_id)
@@ -838,9 +1016,23 @@ async def issue_task_person(callback: CallbackQuery, state: FSMContext) -> None:
         selected.add(user_id)
         action = "Добавлен"
     await state.update_data(member_ids=list(selected))
-    await callback.message.edit_reply_markup(
-        reply_markup=people_search_keyboard(ordered, selected)
-    )
+    if data.get("people_picker_mode") == "all":
+        await callback.message.edit_reply_markup(
+            reply_markup=people_all_keyboard(
+                users,
+                selected,
+                page,
+                pages,
+                person_callback_prefix="issue:person",
+                done_callback="issue:people:done",
+                page_callback_prefix="issue:people:all",
+            )
+        )
+        await state.update_data(people_picker_page=page)
+    else:
+        await callback.message.edit_reply_markup(
+            reply_markup=people_search_keyboard(ordered, selected)
+        )
     await callback.answer(f"{action}: {display_user(selected_user)}")
     await callback.message.answer(
         f"{action}: {display_user(selected_user)}. Всего: {len(selected)}.\n\n"
@@ -1947,10 +2139,17 @@ async def event_create_description(message: Message, state: FSMContext) -> None:
         await message.answer("Максимум 5000 символов.")
         return
     await state.update_data(description=None if description == "-" else description, participant_ids=[])
+    await state.update_data(people_picker_mode="search", people_picker_page=0)
     await state.set_state(EventCreateFlow.people)
     await message.answer(
         "Добавьте участников: введите ФИО или @username. "
-        "Если участников заранее указывать не нужно, отправьте «-»."
+        "Можно открыть всю базу и нажать нужных людей или искать по имени. "
+        "Если участников заранее указывать не нужно, отправьте «-».",
+        reply_markup=people_picker_mode_keyboard(
+            all_callback="evp:all:0",
+            search_callback="evp:search",
+            done_callback="evp:done",
+        ),
     )
 
 
@@ -1961,6 +2160,7 @@ async def event_create_people_search(message: Message, state: FSMContext) -> Non
     if message.text.strip() == "-":
         await create_event_from_state(message, state, actor)
         return
+    await state.update_data(people_picker_mode="search", people_picker_page=0)
     users = await search_users(actor, message.text)
     if not users:
         await message.answer("Никого не найдено.")
@@ -1969,6 +2169,41 @@ async def event_create_people_search(message: Message, state: FSMContext) -> Non
         "Выберите участников:",
         reply_markup=event_people_keyboard(users, set(data.get("participant_ids", []))),
     )
+
+
+@router.callback_query(EventCreateFlow.people, F.data == "evp:search")
+async def event_people_search_mode(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(people_picker_mode="search", people_picker_page=0)
+    await callback.message.answer(
+        "🔎 Режим поиска. Введите часть ФИО или @username. "
+        "Для завершения нажмите «Закончить выбор» или отправьте «-»."
+    )
+    await callback.answer()
+
+
+@router.callback_query(EventCreateFlow.people, F.data.startswith("evp:all:"))
+async def event_people_all(callback: CallbackQuery, state: FSMContext) -> None:
+    actor = await sync_callback_user(callback)
+    try:
+        page = int(callback.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer("Некорректная страница.", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = set(data.get("participant_ids", []))
+    users, page, pages = await active_users_page(actor, page)
+    await state.update_data(people_picker_mode="all", people_picker_page=page)
+    text, keyboard = people_all_view(
+        users,
+        selected,
+        page,
+        pages,
+        person_callback_prefix="evp",
+        done_callback="evp:done",
+        page_callback_prefix="evp:all",
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 
 @router.callback_query(EventCreateFlow.people, F.data.startswith("evp:"))
@@ -1984,19 +2219,42 @@ async def event_create_people_callback(callback: CallbackQuery, state: FSMContex
     selected.symmetric_difference_update({value})
     await state.update_data(participant_ids=list(selected))
     visible_ids = [
-        uuid.UUID(button.callback_data.split(":", 1)[1])
+        uuid.UUID(button.callback_data.rsplit(":", 1)[-1])
         for row in callback.message.reply_markup.inline_keyboard
         for button in row
         if button.callback_data and button.callback_data.startswith("evp:")
         and button.callback_data != "evp:done"
+        and button.callback_data.count(":") == 1
     ]
-    async with SessionLocal() as session:
-        users = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
+    if data.get("people_picker_mode") == "all":
+        actor = await sync_callback_user(callback)
+        users, page, pages = await active_users_page(
+            actor,
+            int(data.get("people_picker_page", 0)),
+        )
+    else:
+        async with SessionLocal() as session:
+            users = list((await session.scalars(select(User).where(User.id.in_(visible_ids)))).all())
+        page = pages = 0
     by_id = {user.id: user for user in users}
     ordered = [by_id[item] for item in visible_ids if item in by_id]
-    await callback.message.edit_reply_markup(
-        reply_markup=event_people_keyboard(ordered, selected)
-    )
+    if data.get("people_picker_mode") == "all":
+        await callback.message.edit_reply_markup(
+            reply_markup=people_all_keyboard(
+                users,
+                selected,
+                page,
+                pages,
+                person_callback_prefix="evp",
+                done_callback="evp:done",
+                page_callback_prefix="evp:all",
+            )
+        )
+        await state.update_data(people_picker_page=page)
+    else:
+        await callback.message.edit_reply_markup(
+            reply_markup=event_people_keyboard(ordered, selected)
+        )
     await callback.answer("Выбор обновлён")
 
 

@@ -47,6 +47,8 @@ from apps.bot.app.main import (
     is_exact_user_match,
     main_keyboard,
     parse_input_datetime,
+    people_all_keyboard,
+    people_picker_mode_keyboard,
     people_search_keyboard,
 )
 from apps.telegram_user_service.app.client import (
@@ -112,7 +114,7 @@ def test_bot_dates_use_minsk_time() -> None:
     assert parse_input_datetime("31.12.2026 12:00") == datetime(2026, 12, 31, 9, tzinfo=UTC)
 
 
-def test_people_search_keyboard_keeps_selection_without_a_done_button() -> None:
+def test_people_search_keyboard_keeps_selection_with_explicit_finish_button() -> None:
     first = active_user(101, "Анна Тест")
     second = active_user(102, "Борис Тест")
     first.id = uuid.uuid4()
@@ -120,9 +122,38 @@ def test_people_search_keyboard_keeps_selection_without_a_done_button() -> None:
 
     keyboard = people_search_keyboard([first, second], {str(first.id), str(second.id)})
 
-    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard) == 3
     assert keyboard.inline_keyboard[0][0].text.startswith("✅ Анна Тест")
     assert "@user101" in keyboard.inline_keyboard[0][0].text
+    assert keyboard.inline_keyboard[-1][0].text == "✅ Закончить выбор (2)"
+    assert keyboard.inline_keyboard[-1][0].callback_data == "issue:people:done"
+
+
+def test_people_picker_has_full_database_mode_and_pagination() -> None:
+    first = active_user(101, "Анна Тест")
+    second = active_user(102, "Борис Тест")
+    first.id = uuid.uuid4()
+    second.id = uuid.uuid4()
+
+    mode_keyboard = people_picker_mode_keyboard(
+        all_callback="issue:people:all:0",
+        search_callback="issue:people:search",
+    )
+    all_keyboard = people_all_keyboard(
+        [first, second],
+        {str(first.id)},
+        page=0,
+        pages=2,
+        person_callback_prefix="issue:person",
+        done_callback="issue:people:done",
+        page_callback_prefix="issue:people:all",
+    )
+
+    assert mode_keyboard.inline_keyboard[0][0].text == "👥 Открыть всю базу"
+    assert mode_keyboard.inline_keyboard[0][1].text == "🔎 Искать"
+    assert all_keyboard.inline_keyboard[0][0].text.startswith("✅ Анна Тест")
+    assert all_keyboard.inline_keyboard[-2][0].text == "Вперёд →"
+    assert all_keyboard.inline_keyboard[-1][0].text == "✅ Закончить выбор (1)"
 
 
 def test_exact_user_match_accepts_full_name_or_username_only() -> None:
