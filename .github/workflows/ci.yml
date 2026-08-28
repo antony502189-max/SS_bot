@@ -40,4 +40,10 @@ jobs:
           S3_ACCESS_KEY: ss_bot
           S3_SECRET_KEY: change-me-in-production
           S3_BUCKET: ss-bot-ci-integration
-      - run: docker compose config
+      - run: docker compose --env-file .env.example config --quiet
+      - run: >-
+          docker compose --env-file .env.example
+          -f docker-compose.yml -f docker-compose.production.yml
+          config --quiet
+        env:
+          DOMAIN: release.example.invalid
