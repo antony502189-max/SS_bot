@@ -13,6 +13,14 @@ from ..services import audit, require_role
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+def _audit_value(value: object) -> object:
+    if hasattr(value, "value"):
+        return value.value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
+
+
 async def admin_actor(
     actor: User = Depends(current_user), session: AsyncSession = Depends(get_session)
 ) -> User:
@@ -55,16 +63,17 @@ async def update_user(
         raise HTTPException(status_code=422, detail="You cannot deactivate your own account")
     if user.id == actor.id and changes.get("status") and changes["status"].value != "active":
         raise HTTPException(status_code=422, detail="You cannot deactivate your own account")
-    old = {
-        key: getattr(user, key).value
-        if hasattr(getattr(user, key), "value")
-        else str(getattr(user, key))
-        for key in changes
-    }
+    old = {key: _audit_value(getattr(user, key)) for key in changes}
+    serialized_changes = {key: _audit_value(value) for key, value in changes.items()}
     for key, value in changes.items():
         setattr(user, key, value)
     await audit(
-        session, actor.id, "admin.user_updated", "user", user.id, {"old": old, "new": changes}
+        session,
+        actor.id,
+        "admin.user_updated",
+        "user",
+        user.id,
+        {"old": old, "new": serialized_changes},
     )
     await session.commit()
     await session.refresh(user)

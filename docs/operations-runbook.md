@@ -25,11 +25,12 @@ Use this runbook for a staging deployment first, then repeat the same checks for
 
 1. Send `/start` to the replacement bot and complete the full-name and username flow. Verify the correct role-aware reply keyboard appears.
 2. Exercise the bot-only task workflow: open task filters, create an individual task, create a group task, edit task details, change checklist items, add/remove a member, and replace the group leader.
-3. Create a group task with a leader and two participants. Verify the worker creates the chat, posts and pins the task brief, adds the task creator, handles direct invitation or invite-link fallback, sends 30-minute reminders only while a user has not joined, and handles one member leaving and rejoining.
+3. Create creator-led and participant-led group tasks with two participants. Verify the worker creates each chat once, posts and pins the task brief, adds the task creator, handles direct invitation or invite-link fallback, sends reminders at `INVITE_REMINDER_MINUTES` only while a user has not joined, and handles one member leaving and rejoining.
 4. Build a report entirely through bot buttons. Add JPEG, PNG, and WebP photos, preview and remove a photo, submit the report, return it for rework, resubmit it, and approve it as the leader.
 5. Create an event through the bot, verify participants and budget, open its archive, request the PDF and photo ZIP in Telegram, and test retention extension with an administrator account.
 6. Test administrator controls from the bot by changing a test user role and toggling account activation.
 7. On a disposable closed task, validate invitation retry, cleanup warning, invitation revocation, and chat deletion. Verify an active or merely overdue task is never deleted before closure and the calculated cleanup time.
+8. To shorten only this staging cleanup test, set `APP_ENV=staging` and `STAGING_TASK_CLEANUP_MINUTES` from 5 to 60. The override is ignored outside staging; remove it immediately after acceptance.
 
 ## Backup, restore, and rollback
 
@@ -40,7 +41,7 @@ Use this runbook for a staging deployment first, then repeat the same checks for
 
 ## Monitoring and incident response
 
-- Forward JSON application logs to centralized logging. Alert on `/readyz` failure, repeated worker outbox failures, webhook delivery errors, task-chat degradation, and storage errors.
+- Forward JSON application logs to centralized logging. Alert on `/readyz` failure, repeated worker outbox failures, webhook delivery errors, task-chat degradation, and storage errors. Verify redaction remains active for bot tokens, invite links, and credential-like values.
 - Use `request_id` from an API response or log event to trace a request across application logs.
 - If a bot token or MTProto session is exposed, immediately revoke/rotate it, remove the old deployment secret, restart affected services, and audit bot/group activity.
 - If Telegram group automation degrades, leave the task and archive records intact; retry through the durable outbox after resolving permissions or rate limits.

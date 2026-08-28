@@ -1,3 +1,6 @@
+import json
+import logging
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -11,12 +14,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from telethon import errors, functions
 
+from apps.api.app import services as service_module
 from apps.api.app.archive import build_event_archive_pdf
 from apps.api.app.main import app
 from apps.api.app.models import (
+    AuditLog,
     Base,
     ChatStatus,
     Event,
+    MembershipState,
     Notification,
     OutboxEvent,
     ReportStatus,
@@ -24,6 +30,7 @@ from apps.api.app.models import (
     Sector,
     Task,
     TaskChat,
+    TaskChatMember,
     TaskKind,
     TaskMember,
     TaskReport,
@@ -31,10 +38,18 @@ from apps.api.app.models import (
     User,
     UserStatus,
 )
+from apps.api.app.observability import JsonFormatter
 from apps.api.app.photos import inspect_photo
+from apps.api.app.routers import admin as admin_routes
 from apps.api.app.routers import reports as report_routes
 from apps.api.app.routers import tasks as task_routes
-from apps.api.app.schemas import EventCreate, ReportCreate, ReportDecision, TaskCreate
+from apps.api.app.schemas import (
+    EventCreate,
+    ReportCreate,
+    ReportDecision,
+    TaskCreate,
+    UserAdminUpdate,
+)
 from apps.api.app.security import issue_access_token, verify_access_token
 from apps.api.app.services import (
     create_event,
@@ -44,6 +59,8 @@ from apps.api.app.services import (
     task_cleanup_at,
 )
 from apps.bot.app.main import (
+    TaskIssue,
+    finish_task_people,
     is_exact_user_match,
     main_keyboard,
     parse_input_datetime,
@@ -176,6 +193,39 @@ def test_group_cleanup_runs_each_minute() -> None:
     assert celery_app.conf.beat_schedule["cleanup-every-minute"]["schedule"] == 60.0
 
 
+def test_all_periodic_business_jobs_are_registered_with_expected_cadence() -> None:
+    expected = {
+        "outbox-every-minute": ("apps.worker.app.tasks.process_outbox", 60.0),
+        "invite-reminders-every-minute": (
+            "apps.worker.app.tasks.send_invite_reminders",
+            60.0,
+        ),
+        "cleanup-every-minute": ("apps.worker.app.tasks.process_cleanup", 60.0),
+        "notifications-every-minute": (
+            "apps.worker.app.tasks.send_due_notifications",
+            60.0,
+        ),
+        "task-deadlines-every-five-minutes": (
+            "apps.worker.app.tasks.process_task_deadlines",
+            300.0,
+        ),
+        "reconcile-task-chat-members-every-ten-minutes": (
+            "apps.worker.app.tasks.reconcile_task_chat_members",
+            600.0,
+        ),
+        "process-archive-retention-daily": (
+            "apps.worker.app.tasks.process_archive_retention",
+            86400.0,
+        ),
+    }
+    actual = {
+        name: (entry["task"], entry["schedule"])
+        for name, entry in celery_app.conf.beat_schedule.items()
+    }
+    assert actual == expected
+    assert {task_name for task_name, _schedule in expected.values()} <= set(celery_app.tasks)
+
+
 def test_signed_session_round_trip() -> None:
     token = issue_access_token("08a093e2-5b38-44be-9e6e-ae4e935c39fc", "test-secret", 5)
     assert verify_access_token(token, "test-secret") == "08a093e2-5b38-44be-9e6e-ae4e935c39fc"
@@ -192,6 +242,30 @@ def test_readiness_has_request_trace_id(monkeypatch) -> None:
     assert response.headers["X-Request-ID"]
 
 
+def test_json_logs_redact_tokens_invite_links_and_secret_values() -> None:
+    token = "123456789:abcdefghijklmnopqrstuvwxyzABCDEFGH"
+    invite = "https://t.me/+privateInviteCode"
+    try:
+        raise RuntimeError(f"request failed token={token} invite={invite}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            "ss_bot.test",
+            logging.ERROR,
+            __file__,
+            1,
+            f"Bot {token} secret=do-not-log {invite}",
+            (),
+            exc_info=sys.exc_info(),
+        )
+    payload = json.loads(JsonFormatter().format(record))
+    rendered = json.dumps(payload)
+    assert token not in rendered
+    assert "do-not-log" not in rendered
+    assert "privateInviteCode" not in rendered
+    assert "REDACTED_BOT_TOKEN" in rendered
+    assert "REDACTED_TELEGRAM_INVITE" in rendered
+
+
 def test_cleanup_is_three_days_after_later_of_deadline_and_closure() -> None:
     completed_before = datetime(2026, 8, 25, tzinfo=UTC)
     deadline = datetime(2026, 9, 1, tzinfo=UTC)
@@ -199,6 +273,31 @@ def test_cleanup_is_three_days_after_later_of_deadline_and_closure() -> None:
 
     completed_after = datetime(2026, 9, 5, tzinfo=UTC)
     assert task_cleanup_at(completed_after, deadline) == completed_after + timedelta(days=3)
+
+
+def test_cleanup_shortening_is_restricted_to_explicit_staging(monkeypatch) -> None:
+    closed_at = datetime(2026, 9, 5, tzinfo=UTC)
+    deadline = datetime(2026, 9, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(
+        service_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            app_env="production",
+            staging_task_cleanup_minutes=5,
+        ),
+    )
+    assert task_cleanup_at(closed_at, deadline) == closed_at + timedelta(days=3)
+
+    monkeypatch.setattr(
+        service_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            app_env="staging",
+            staging_task_cleanup_minutes=5,
+        ),
+    )
+    assert task_cleanup_at(closed_at, deadline) == closed_at + timedelta(minutes=5)
 
 
 def test_telegram_chat_id_round_trip() -> None:
@@ -315,6 +414,7 @@ async def test_creator_is_auto_added_once(session) -> None:
     assert [(notification.user_id, notification.type) for notification in notifications] == [
         (assignee.id, "TASK_ASSIGNED")
     ]
+    assert list((await session.scalars(select(OutboxEvent))).all()) == []
 
 
 @pytest.mark.asyncio
@@ -342,6 +442,40 @@ async def test_admin_can_permanently_delete_an_accidental_task(session) -> None:
     assert [(notice.user_id, notice.type, notice.task_id) for notice in notices] == [
         (assignee.id, "TASK_DELETED", None)
     ]
+
+
+@pytest.mark.asyncio
+async def test_permanent_task_delete_clears_task_chat_outbox(session) -> None:
+    admin = active_user(8, "Admin User", role=Role.ADMIN)
+    assignee = active_user(9, "Worker User")
+    session.add_all([admin, assignee])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        admin,
+        TaskCreate(
+            title="Unprovisioned group",
+            kind=TaskKind.GROUP,
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            leader_id=assignee.id,
+            member_ids=[assignee.id],
+        ),
+        "delete-unprovisioned-group",
+    )
+    chat = await session.scalar(select(TaskChat).where(TaskChat.task_id == task.id))
+    session.add(
+        OutboxEvent(
+            event_type="TASK_CHAT_MEMBER_INVITE_REQUESTED",
+            aggregate_type="task_chat",
+            aggregate_id=str(chat.id),
+            payload={"task_id": str(task.id), "user_id": str(assignee.id)},
+        )
+    )
+    await session.flush()
+
+    await task_routes.delete_task(task.id, admin, session)
+
+    assert list((await session.scalars(select(OutboxEvent))).all()) == []
 
 
 @pytest.mark.asyncio
@@ -389,7 +523,7 @@ async def test_group_task_needs_selected_leader(session) -> None:
             ),
             "request-2",
         )
-    with pytest.raises(HTTPException, match="selected assignee"):
+    with pytest.raises(HTTPException, match="at least one assignee"):
         await create_task(
             session,
             creator,
@@ -402,6 +536,98 @@ async def test_group_task_needs_selected_leader(session) -> None:
             ),
             "request-3",
         )
+
+
+@pytest.mark.asyncio
+async def test_group_task_allows_creator_as_leader_without_duplicate_membership(session) -> None:
+    creator = active_user(3, "Creator Leader", role=Role.ADMIN)
+    assignee = active_user(4, "Group Assignee")
+    session.add_all([creator, assignee])
+    await session.flush()
+
+    task, _ = await create_task(
+        session,
+        creator,
+        TaskCreate(
+            title="Creator-led group",
+            kind=TaskKind.GROUP,
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            leader_id=creator.id,
+            member_ids=[assignee.id],
+        ),
+        "creator-led-group",
+    )
+
+    members = list(
+        (await session.scalars(select(TaskMember).where(TaskMember.task_id == task.id))).all()
+    )
+    assert len(members) == 2
+    creator_member = next(member for member in members if member.user_id == creator.id)
+    assert creator_member.is_creator is True
+    assert creator_member.is_leader is True
+    assert task.leader_id == creator.id
+
+
+@pytest.mark.asyncio
+async def test_group_task_rejects_arbitrary_non_member_leader(session) -> None:
+    creator = active_user(5, "Creator", role=Role.ADMIN)
+    assignee = active_user(6, "Assignee")
+    outsider = active_user(7, "Outsider")
+    session.add_all([creator, assignee, outsider])
+    await session.flush()
+
+    with pytest.raises(HTTPException, match="creator or a selected assignee"):
+        await create_task(
+            session,
+            creator,
+            TaskCreate(
+                title="Invalid leader",
+                kind=TaskKind.GROUP,
+                deadline=datetime.now(UTC) + timedelta(days=1),
+                leader_id=outsider.id,
+                member_ids=[assignee.id],
+            ),
+            "invalid-non-member-leader",
+        )
+
+
+@pytest.mark.asyncio
+async def test_task_people_handler_offers_creator_as_group_leader(monkeypatch) -> None:
+    creator_id = str(uuid.uuid4())
+    assignee_id = str(uuid.uuid4())
+    captured: dict[str, object] = {}
+
+    class FakeState:
+        async def get_data(self):
+            return {
+                "kind": "group",
+                "creator_id": creator_id,
+                "member_ids": [assignee_id],
+            }
+
+        async def set_state(self, value):
+            captured["state"] = value
+
+        async def update_data(self, **values):
+            captured.update(values)
+
+    class FakeMessage:
+        async def answer(self, text, reply_markup=None):
+            captured["text"] = text
+            captured["reply_markup"] = reply_markup
+
+    async def fake_leader_keyboard(member_ids, selected_creator_id):
+        captured["member_ids"] = member_ids
+        captured["creator_id"] = selected_creator_id
+        return "keyboard"
+
+    monkeypatch.setattr("apps.bot.app.handlers.core.leader_keyboard", fake_leader_keyboard)
+
+    assert await finish_task_people(FakeMessage(), FakeState()) is True
+    assert captured["state"] == TaskIssue.leader
+    assert captured["member_ids"] == [assignee_id]
+    assert captured["creator_id"] == creator_id
+    assert captured["reply_markup"] == "keyboard"
 
 
 @pytest.mark.asyncio
@@ -713,6 +939,179 @@ async def test_outbox_ignores_future_events(session, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_privacy_fallback_creates_personal_invite_and_configured_reminder(
+    session, monkeypatch
+) -> None:
+    creator = active_user(75, "Creator", role=Role.ADMIN)
+    invitee = active_user(76, "No Username")
+    invitee.telegram_username = None
+    session.add_all([creator, invitee])
+    await session.flush()
+    task = Task(
+        title="Fallback invite",
+        kind=TaskKind.GROUP,
+        deadline=datetime.now(UTC) + timedelta(days=1),
+        creator_id=creator.id,
+        leader_id=creator.id,
+        idempotency_key="fallback-invite",
+    )
+    session.add(task)
+    await session.flush()
+    chat = TaskChat(task_id=task.id, telegram_chat_id=-1001234567890, status=ChatStatus.READY)
+    session.add(chat)
+    await session.flush()
+    sent: list[tuple[int, str]] = []
+
+    class FakeTelegram:
+        async def invite_user(self, _chat_id, username):
+            assert username is None
+            return TelegramResult(TelegramResultKind.USERNAME_NOT_FOUND)
+
+        async def create_single_use_invite(self, _chat_id, _name):
+            return TelegramResult(TelegramResultKind.SUCCESS, value="https://t.me/+personal")
+
+    async def fake_notify(telegram_id, text):
+        sent.append((telegram_id, text))
+
+    monkeypatch.setattr(worker_tasks, "notify", fake_notify)
+    before = datetime.now(UTC)
+    await worker_tasks.invite_task_chat_member(session, FakeTelegram(), task, chat, invitee.id)
+    entry = await session.scalar(
+        select(TaskChatMember).where(
+            TaskChatMember.task_chat_id == chat.id,
+            TaskChatMember.user_id == invitee.id,
+        )
+    )
+
+    assert entry.state == MembershipState.INVITED
+    assert entry.invite_link == "https://t.me/+personal"
+    reminder_at = (
+        entry.next_reminder_at.replace(tzinfo=UTC)
+        if entry.next_reminder_at.tzinfo is None
+        else entry.next_reminder_at
+    )
+    assert reminder_at >= before + timedelta(
+        minutes=worker_tasks.settings.invite_reminder_minutes
+    )
+    assert sent == [(invitee.telegram_id, "Вступите в рабочую группу «Fallback invite»: https://t.me/+personal")]
+
+
+@pytest.mark.asyncio
+async def test_invite_reminder_reconciles_joined_member_before_dm(session, monkeypatch) -> None:
+    creator = active_user(77, "Creator", role=Role.ADMIN)
+    invitee = active_user(78, "Invitee")
+    session.add_all([creator, invitee])
+    await session.flush()
+    task = Task(
+        title="Reminder reconciliation",
+        kind=TaskKind.GROUP,
+        deadline=datetime.now(UTC) + timedelta(days=1),
+        creator_id=creator.id,
+        leader_id=creator.id,
+        idempotency_key="reminder-reconcile",
+    )
+    session.add(task)
+    await session.flush()
+    chat = TaskChat(task_id=task.id, telegram_chat_id=-1001234567890, status=ChatStatus.READY)
+    session.add(chat)
+    await session.flush()
+    member = TaskChatMember(
+        task_chat_id=chat.id,
+        user_id=invitee.id,
+        state=MembershipState.INVITED,
+        invite_link="https://t.me/+personal",
+        next_reminder_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    session.add(member)
+    await session.commit()
+
+    class ExistingSession:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTelegram:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def is_user_in_chat(self, _chat_id, _username):
+            return TelegramResult(TelegramResultKind.SUCCESS, value=True)
+
+    async def forbidden_notify(*_args):
+        raise AssertionError("joined member must not receive a reminder")
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", lambda: ExistingSession())
+    monkeypatch.setattr(worker_tasks, "TelegramUserService", FakeTelegram)
+    monkeypatch.setattr(worker_tasks, "notify", forbidden_notify)
+    await worker_tasks._send_invite_reminders()
+
+    assert member.state == MembershipState.JOINED
+    assert member.next_reminder_at is None
+    assert member.reminder_count == 0
+
+
+@pytest.mark.asyncio
+async def test_invite_reminder_stops_for_inactive_user(session, monkeypatch) -> None:
+    creator = active_user(79, "Creator", role=Role.ADMIN)
+    invitee = active_user(80, "Inactive Invitee")
+    invitee.status = UserStatus.INACTIVE
+    session.add_all([creator, invitee])
+    await session.flush()
+    task = Task(
+        title="Inactive reminder",
+        kind=TaskKind.GROUP,
+        deadline=datetime.now(UTC) + timedelta(days=1),
+        creator_id=creator.id,
+        leader_id=creator.id,
+        idempotency_key="inactive-reminder",
+    )
+    session.add(task)
+    await session.flush()
+    chat = TaskChat(task_id=task.id, telegram_chat_id=-1001234567890, status=ChatStatus.READY)
+    session.add(chat)
+    await session.flush()
+    member = TaskChatMember(
+        task_chat_id=chat.id,
+        user_id=invitee.id,
+        state=MembershipState.INVITED,
+        invite_link="https://t.me/+personal",
+        next_reminder_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    session.add(member)
+    await session.commit()
+
+    class ExistingSession:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class TelegramMustNotBeCalled:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def is_user_in_chat(self, *_args):
+            raise AssertionError("inactive users must not be reconciled for reminders")
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", lambda: ExistingSession())
+    monkeypatch.setattr(worker_tasks, "TelegramUserService", TelegramMustNotBeCalled)
+    await worker_tasks._send_invite_reminders()
+
+    assert member.state == MembershipState.FAILED
+    assert member.next_reminder_at is None
+    assert member.last_error == "user_inactive"
+
+
+@pytest.mark.asyncio
 async def test_sector_head_cannot_add_another_sector_participant_to_event(session) -> None:
     first_sector = Sector(name="First")
     second_sector = Sector(name="Second")
@@ -762,3 +1161,214 @@ async def test_closed_event_task_sets_one_year_retention(session) -> None:
     await session.flush()
     await refresh_event_retention(session, event.id)
     assert event.retention_delete_at.date() == datetime(2027, 8, 25, tzinfo=UTC).date()
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_is_admin_only_at_domain_boundary(session) -> None:
+    admin = active_user(100, "Admin", role=Role.ADMIN)
+    participant = active_user(101, "Participant")
+    assignee = active_user(102, "Assignee")
+    session.add_all([admin, participant, assignee])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        admin,
+        TaskCreate(
+            title="Protected deletion",
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            member_ids=[assignee.id],
+        ),
+        "protected-delete",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await task_routes.delete_task(task.id, participant, session)
+    assert exc_info.value.status_code == 403
+    assert await session.get(Task, task.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_report_submission_and_decision_reject_nonmembers_and_wrong_leader(session) -> None:
+    admin = active_user(110, "Admin", role=Role.ADMIN)
+    leader = active_user(111, "Leader")
+    worker = active_user(112, "Worker")
+    outsider = active_user(113, "Outsider")
+    session.add_all([admin, leader, worker, outsider])
+    await session.flush()
+    task, _ = await create_task(
+        session,
+        admin,
+        TaskCreate(
+            title="Protected report",
+            kind=TaskKind.GROUP,
+            deadline=datetime.now(UTC) + timedelta(days=1),
+            leader_id=leader.id,
+            member_ids=[leader.id, worker.id],
+        ),
+        "protected-report",
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as submit_error:
+        await report_routes.submit_report(task.id, ReportCreate(comment="Intrusion"), outsider, session)
+    assert submit_error.value.status_code == 403
+
+    await report_routes.submit_report(task.id, ReportCreate(comment="Ready"), worker, session)
+    with pytest.raises(HTTPException) as decision_error:
+        await report_routes.decide_report(
+            task.id,
+            ReportDecision(approved=True),
+            worker,
+            session,
+        )
+    assert decision_error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_deadline_worker_is_idempotent_and_skips_closed_tasks(session, monkeypatch) -> None:
+    user = active_user(120, "Deadline User")
+    session.add(user)
+    await session.flush()
+    now = datetime.now(UTC)
+    due = Task(
+        title="Due soon",
+        deadline=now + timedelta(hours=1),
+        creator_id=user.id,
+        idempotency_key="due-soon",
+    )
+    overdue = Task(
+        title="Overdue",
+        deadline=now - timedelta(hours=1),
+        creator_id=user.id,
+        idempotency_key="overdue",
+    )
+    completed = Task(
+        title="Already completed",
+        status=TaskStatus.COMPLETED,
+        deadline=now - timedelta(hours=1),
+        completed_at=now - timedelta(minutes=30),
+        creator_id=user.id,
+        idempotency_key="already-completed",
+    )
+    session.add_all([due, overdue, completed])
+    await session.flush()
+    session.add_all(
+        [
+            TaskMember(task_id=task.id, user_id=user.id, is_creator=True)
+            for task in (due, overdue, completed)
+        ]
+    )
+    await session.commit()
+
+    class ExistingSession:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", lambda: ExistingSession())
+    await worker_tasks._process_task_deadlines()
+    await worker_tasks._process_task_deadlines()
+
+    assert due.status == TaskStatus.ACTIVE
+    assert overdue.status == TaskStatus.OVERDUE
+    assert completed.status == TaskStatus.COMPLETED
+    notices = list((await session.scalars(select(Notification))).all())
+    assert [(notice.task_id, notice.type) for notice in notices] == [
+        (overdue.id, "TASK_OVERDUE"),
+        (due.id, "TASK_DEADLINE_24H"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outbox_backoff_is_bounded_and_poison_event_stops(session, monkeypatch) -> None:
+    retry = OutboxEvent(
+        event_type="TASK_CREATED",
+        aggregate_type="task",
+        aggregate_id="retry",
+        payload={"task_id": str(uuid.uuid4())},
+    )
+    poison = OutboxEvent(
+        event_type="TASK_CREATED",
+        aggregate_type="task",
+        aggregate_id="poison",
+        payload={"task_id": str(uuid.uuid4())},
+        attempts=worker_tasks._MAX_OUTBOX_ATTEMPTS - 1,
+    )
+    session.add_all([retry, poison])
+    await session.commit()
+
+    class ExistingSession:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def fail(*_args):
+        raise RuntimeError("telegram unavailable")
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", lambda: ExistingSession())
+    monkeypatch.setattr(worker_tasks, "provision_task_chat", fail)
+    before = datetime.now(UTC)
+    await worker_tasks._process_outbox()
+
+    assert retry.attempts == 1
+    assert retry.last_error == "RuntimeError"
+    retry_at = (
+        retry.available_at.replace(tzinfo=UTC)
+        if retry.available_at.tzinfo is None
+        else retry.available_at
+    )
+    assert before + timedelta(seconds=60) <= retry_at <= before + timedelta(seconds=61)
+    assert poison.attempts == worker_tasks._MAX_OUTBOX_ATTEMPTS
+    assert poison.processed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_administration_guards_self_deactivation_and_sector_head_requirements(session) -> None:
+    admin = active_user(130, "Admin", role=Role.ADMIN)
+    target = active_user(131, "Target")
+    inactive_sector = Sector(name="Inactive", is_active=False)
+    active_sector = Sector(name="Active")
+    session.add_all([admin, target, inactive_sector, active_sector])
+    await session.commit()
+
+    with pytest.raises(HTTPException, match="deactivate your own"):
+        await admin_routes.update_user(
+            admin.id,
+            UserAdminUpdate(status=UserStatus.INACTIVE),
+            admin,
+            session,
+        )
+    with pytest.raises(HTTPException, match="active sector"):
+        await admin_routes.update_user(
+            target.id,
+            UserAdminUpdate(role=Role.SECTOR_HEAD),
+            admin,
+            session,
+        )
+    with pytest.raises(HTTPException, match="active sector"):
+        await admin_routes.update_user(
+            target.id,
+            UserAdminUpdate(role=Role.SECTOR_HEAD, sector_id=inactive_sector.id),
+            admin,
+            session,
+        )
+
+    updated = await admin_routes.update_user(
+        target.id,
+        UserAdminUpdate(role=Role.SECTOR_HEAD, sector_id=active_sector.id),
+        admin,
+        session,
+    )
+    assert updated.role == Role.SECTOR_HEAD
+    assert updated.sector_id == active_sector.id
+    log = await session.scalar(
+        select(AuditLog).where(AuditLog.action == "admin.user_updated")
+    )
+    assert log.details["new"] == {
+        "role": "sector_head",
+        "sector_id": str(active_sector.id),
+    }

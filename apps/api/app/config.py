@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     log_level: str = "INFO"
     task_deadline_reminder_hours: int = Field(default=24, ge=1, le=168)
+    invite_reminder_minutes: int = Field(default=30, ge=5, le=1440)
+    staging_task_cleanup_minutes: int | None = Field(default=None, ge=5, le=60)
     archive_retention_days: int = Field(default=365, ge=1, le=3650)
     archive_delete_warning_days: int = Field(default=30, ge=1, le=365)
     telegram_bot_token: str = ""
@@ -33,10 +35,10 @@ class Settings(BaseSettings):
     bootstrap_admin_telegram_ids: str = ""
     superadmin_telegram_ids: str = ""
 
-    @field_validator("telegram_api_id", mode="before")
+    @field_validator("telegram_api_id", "staging_task_cleanup_minutes", mode="before")
     @classmethod
-    def empty_telegram_api_id_is_unset(cls, value: object) -> object:
-        """Allow the documented blank MTProto setting until group automation is configured."""
+    def empty_optional_integer_is_unset(cls, value: object) -> object:
+        """Allow documented optional integer settings to remain blank."""
         return None if value == "" else value
 
     @property

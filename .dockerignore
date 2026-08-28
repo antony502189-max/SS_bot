@@ -3,7 +3,4 @@
 .venv
 __pycache__
 *.pyc
-apps/miniapp/node_modules
-apps/miniapp/dist
 ss_bot.db
-

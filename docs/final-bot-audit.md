@@ -1,32 +1,54 @@
 # Final bot audit
 
-Audited: 2026-08-26. Statuses reflect reachable Telegram flows, not merely API routes.
+Audited 2026-08-28. Exact candidate SHA and CI evidence are recorded in the
+release handoff, not hard-coded here.
 
-| Function | Implementation status | Test status | Known issue | Action required |
-| --- | --- | --- | --- | --- |
-| Bot startup and router registration | IMPLEMENTED_AND_TESTED | Bot contract/import tests pass | Live Bot API credentials not exercised | Run staging procedure |
-| Telegram-only deployment surface | IMPLEMENTED_AND_TESTED | Compose config and source search pass | Local ignored `.env` may retain obsolete variables | Remove obsolete local variables when rotating secrets |
-| Registration and username synchronization | IMPLEMENTED_AND_TESTED | Direct aiogram-adapter `/start` and full-name registration test | Live Bot API credentials not exercised | Run staging procedure |
-| Role-aware home menu | IMPLEMENTED_AND_TESTED | `test_bot_contract.py` | None | Maintain menu contract test |
-| User search in task wizard | IMPLEMENTED_NOT_TESTED | SQLite-only unit coverage | No PostgreSQL trigram test | Add PostgreSQL integration test |
-| Administration through Telegram | IMPLEMENTED_NOT_TESTED | No Telegram update simulation | User cards, roles, activation, sector assignment, and recent audit-log navigation exist | Add handler integration tests |
-| Sector administration through Telegram | IMPLEMENTED_NOT_TESTED | No Telegram update simulation | List/create/rename/description/status and user-count controls exist | Add handler integration tests |
-| Events through Telegram | IMPLEMENTED_NOT_TESTED | Event validation and archive-union tests | Create/list/open/edit, participant add/remove, sector assignment, archive view, PDF/ZIP, and retention extension exist | Add handler integration tests |
-| Task creation wizard | IMPLEMENTED_NOT_TESTED | Contract and domain tests pass | Event, description, checklist, separate leader, and participant selection are implemented | Add staged-wizard tests |
-| Task card and task lists | IMPLEMENTED_AND_TESTED | Card-control test plus domain tests | Details, checklist, report, cancellation, chat status, members, leader, and checklist add/edit/remove exist | Add aiogram callback tests |
-| Report draft/return/resubmit lifecycle | IMPLEMENTED_AND_TESTED | `test_reports.py` covers group rework and individual close | Bot FSM is implemented; live media/API check remains | Run staging procedure |
-| Report photos | IMPLEMENTED_AND_TESTED | Image inspection and gated MinIO round-trip test | Telegram photo/document upload, preview, and draft deletion are implemented | Add mocked media-handler test; run staging procedure |
-| MTProto group creation and ID interoperability | IMPLEMENTED_AND_TESTED | Bot API/Telethon ID round-trip regression test | Live group creation remains unverified | Run staging verification |
-| Invitations, reminders, reconciliation | IMPLEMENTED_AND_TESTED | Membership-before-reminder regression test | Reminder checks membership; manager chat-status/retry/recovery controls exist | Run live privacy-fallback/reconciliation procedure |
-| Transactional outbox | IMPLEMENTED_AND_TESTED | FloodWait scheduler regression test | Typed FloodWait and generic exponential retries are scheduled | Add an operator outbox view if operational volume demands it |
-| Deadline processing | IMPLEMENTED_AND_TESTED | Worker overdue/notification regression test | Reminder and overdue processing use row locking | Run staging procedure |
-| Group cleanup | IMPLEMENTED_AND_TESTED | Closed/open cleanup regressions pass | Telegram deletion requires live verification | Run staging cleanup procedure |
-| Archive, PDF and photo ZIP through Telegram | IMPLEMENTED_NOT_TESTED | Archive-union and PDF-byte tests | Telegram archive summary, PDF, and ZIP delivery are implemented | Add bot export tests and run staging procedure |
-| Retention and purge | IMPLEMENTED_AND_TESTED | Retention-date, warning, successful purge, and storage-failure regressions | Live storage retention remains to be exercised in staging | Run staging procedure |
-| Audit logging | IMPLEMENTED_NOT_TESTED | Indirect domain coverage | Mutations are audited and admins can view recent entries | Add audit-navigation test |
-| PostgreSQL migration from empty database | IMPLEMENTED_AND_TESTED | SQLite and PostgreSQL 16 upgrades passed | `pg_trgm` and report lifecycle columns verified | Keep PostgreSQL CI gate |
-| Object-storage integration | IMPLEMENTED_AND_TESTED | Gated MinIO upload/retrieve/delete integration test | Local MinIO round trip passed; CI runs it | Run live storage staging check |
+## Automated evidence
 
-No Telegram Mini App or other user-facing web UI remains. The remaining release
-gate is staged Telegram verification and a small set of handler/retention tests,
-not a missing business flow.
+- The complete user-facing surface is Telegram. No Mini App runtime, WebApp
+  button, frontend source, or frontend build exclusion remains.
+- Registration handlers cover idempotent `/start`, username synchronization,
+  full-name validation, disabled accounts, and role-aware menus.
+- Administration handlers cover the directory, pagination, cards, roles,
+  activation, sector assignment/removal, active-sector validation, audit rows,
+  forged/stale callbacks, unauthorized actors, and self-lockout prevention.
+- Task and event participant pickers cover search, directory pagination,
+  persistent selection, stale/inactive users, sector scoping, and finish paths.
+- The group task wizard persists creator-led tasks end to end. Domain scenarios
+  additionally cover participant-led groups, creator-as-leader, individual
+  tasks, report rework, permanent accidental deletion, and retention.
+- Task-card and checklist tests cover rendering, complete/uncomplete metadata,
+  manager add/delete, membership authorization, and stale callback handling.
+- Archive handler tests deliver valid PDF/ZIP documents, enforce event access,
+  scope photos to the selected event, sanitize ZIP filenames, support an empty
+  archive, reject purged archives, and fail safely on storage errors.
+- A callback contract scans normal inline actions for reachability, the 64-byte
+  Telegram limit, handler conflicts/shadowing, canonical UUIDs, and obsolete
+  frontend references.
+- The full integration run passes 76 tests with warnings treated as errors,
+  PostgreSQL 16 enabled, and a real isolated MinIO instance enabled.
+- PostgreSQL reaches one Alembic head and verifies BIGINT Telegram IDs,
+  report lifecycle enum labels, task-member uniqueness, `pg_trgm`, scoped
+  search, and `FOR UPDATE SKIP LOCKED`.
+- API readiness, Redis, Celery worker/beat, bot fake-transport initialization,
+  Python 3.12 image imports, Docker build, and both Compose overlays pass.
+- API, bot, and Celery application logs use the shared JSON formatter. Tokens,
+  invite links, and credential-like values are redacted; worker retry/failure
+  records include safe operation, event, attempt, and error-type fields.
+
+## External gates
+
+- GitHub Actions must be green for the exact final candidate SHA. The release
+  handoff must record the SHA, workflow run ID, and conclusion.
+- Full group provisioning, bot addition, direct invitation, privacy fallback,
+  Bot API delivery, join reconciliation, report-photo transport, and actual
+  group cleanup require the isolated live Telegram staging procedure.
+
+## Non-blocking technical debt
+
+- `apps/bot/app/handlers/core.py` remains a compatibility aggregate. Further
+  decomposition is deferred because imports, handler reachability, and runtime
+  startup are verified and no correctness blocker requires another refactor.
+
+See `docs/final-acceptance.md` for the release matrix. This audit does not make
+a release claim while the revision-specific CI and live Telegram gates remain.

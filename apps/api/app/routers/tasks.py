@@ -108,8 +108,9 @@ async def task_detail(session: AsyncSession, task: Task) -> TaskDetail:
             )
         ).all()
     )
-    return TaskDetail.model_validate(task, from_attributes=True).model_copy(
-        update={
+    return TaskDetail.model_validate(
+        {
+            **TaskOut.model_validate(task, from_attributes=True).model_dump(),
             "members": [
                 TaskMemberOut(
                     user=UserOut.model_validate(user, from_attributes=True),
@@ -570,6 +571,13 @@ async def delete_task(
             OutboxEvent.aggregate_id == str(task.id),
         )
     )
+    if chat:
+        await session.execute(
+            delete(OutboxEvent).where(
+                OutboxEvent.aggregate_type == "task_chat",
+                OutboxEvent.aggregate_id == str(chat.id),
+            )
+        )
     await session.delete(task)
     await session.flush()
     await refresh_event_retention(session, event_id)

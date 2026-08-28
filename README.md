@@ -15,7 +15,7 @@ SS Bot is a Telegram-first task and event system. Users work entirely through th
 - User administration from Telegram: role changes and account activation/deactivation.
 - Async FastAPI API with users, sectors, events, tasks, reports, audit logs, and a PostgreSQL transactional outbox.
 - Creator auto-membership, group-leader requirement, idempotent task creation, sector-scoped authorization, and name/username search.
-- MTProto adapter with categorized Telegram errors, direct invitations, invite-link fallback, 30-minute reminder scheduling, join handling, cleanup warning/revocation/deletion workflow.
+- MTProto adapter with categorized Telegram errors, direct invitations, invite-link fallback, configurable reminder scheduling, join handling, cleanup warning/revocation/deletion workflow.
 - Docker Compose services for PostgreSQL, Redis, MinIO, API, worker, and bot. The Mini App is not part of the runtime stack.
 
 ## Security first
@@ -64,5 +64,7 @@ Use the production edge configuration with `docker compose -f docker-compose.yml
 Move all credentials to a secret manager, use managed PostgreSQL/S3 backups, run migrations as a release step, and configure object-storage lifecycle policies only after verifying the one-year retention process. The first release should run the full Telegram workflow in a dedicated test environment before it is used for real work.
 
 JSON logs include `request_id`, method, path, status, and duration. Forward container logs to your observability platform, alert on `/readyz` failures, and test database restore plus object-storage restore on a regular schedule.
+
+For the disposable live cleanup acceptance test only, `STAGING_TASK_CLEANUP_MINUTES` may be set from 5 to 60 when `APP_ENV=staging`. It is ignored in development and production.
 
 See the [production operations runbook](docs/operations-runbook.md) for deployment, staging acceptance, backup/restore, rollback, and incident-response procedures.

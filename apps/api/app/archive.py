@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -101,6 +102,10 @@ def build_photo_zip(photos: Iterable[TaskPhoto]) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for photo in photos:
-            filename = PurePosixPath(photo.object_key).name
+            basename = PurePosixPath(photo.object_key.replace("\\", "/")).name
+            safe_basename = re.sub(r"[^\w.-]+", "_", basename, flags=re.UNICODE).strip("._")
+            if not safe_basename:
+                safe_basename = "photo"
+            filename = f"{photo.id}-{safe_basename[:160]}"
             archive.writestr(filename, get_object_bytes(photo.object_key))
     return output.getvalue()

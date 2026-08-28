@@ -55,6 +55,8 @@ async def search_users(
         .order_by(User.full_name)
         .limit(20)
     )
+    if actor.role == Role.SECTOR_HEAD:
+        statement = statement.where(User.sector_id == actor.sector_id)
     return [
         UserSearchResult.model_validate(user, from_attributes=True).model_copy(
             update={"sector_name": sector_name}

@@ -38,7 +38,11 @@ def utc_now() -> datetime:
 
 def task_cleanup_at(closed_at: datetime, deadline: datetime) -> datetime:
     """Delete a disposable task chat three days after the later of closure and deadline."""
-    return max(closed_at, deadline) + timedelta(days=3)
+    settings = get_settings()
+    delay = timedelta(days=3)
+    if settings.app_env == "staging" and settings.staging_task_cleanup_minutes is not None:
+        delay = timedelta(minutes=settings.staging_task_cleanup_minutes)
+    return max(closed_at, deadline) + delay
 
 
 async def refresh_event_retention(session: AsyncSession, event_id: uuid.UUID | None) -> None:
@@ -163,17 +167,23 @@ async def create_task(
         raise HTTPException(status_code=422, detail="Deadline must be in the future")
 
     selected_member_ids = set(payload.member_ids)
+    selected_assignee_ids = selected_member_ids - {actor.id}
     if payload.kind.value == "group":
         if not payload.leader_id:
             raise HTTPException(status_code=422, detail="A group task requires a leader")
-        if payload.leader_id not in selected_member_ids:
-            raise HTTPException(status_code=422, detail="Group leader must be a selected assignee")
+        if not selected_assignee_ids:
+            raise HTTPException(status_code=422, detail="A group task requires at least one assignee")
+        if payload.leader_id not in selected_assignee_ids | {actor.id}:
+            raise HTTPException(
+                status_code=422,
+                detail="Group leader must be the creator or a selected assignee",
+            )
     elif payload.leader_id:
         raise HTTPException(status_code=422, detail="Individual tasks cannot have a group leader")
 
     member_ids = set(selected_member_ids)
     member_ids.add(actor.id)
-    if payload.kind.value == "individual" and len(member_ids - {actor.id}) != 1:
+    if payload.kind.value == "individual" and len(selected_assignee_ids) != 1:
         raise HTTPException(
             status_code=422, detail="An individual task requires exactly one assignee"
         )
@@ -210,14 +220,15 @@ async def create_task(
         )
     for position, title in enumerate(payload.checklist):
         session.add(TaskChecklistItem(task_id=task.id, title=title.strip(), position=position))
-    session.add(
-        OutboxEvent(
-            event_type="TASK_CREATED",
-            aggregate_type="task",
-            aggregate_id=str(task.id),
-            payload={"task_id": str(task.id)},
+    if task.kind.value == "group":
+        session.add(
+            OutboxEvent(
+                event_type="TASK_CREATED",
+                aggregate_type="task",
+                aggregate_id=str(task.id),
+                payload={"task_id": str(task.id)},
+            )
         )
-    )
     await queue_task_notifications(session, task, member_ids, "TASK_ASSIGNED")
     await audit(session, actor.id, "task.created", "task", task.id, {"kind": task.kind.value})
     return task, False

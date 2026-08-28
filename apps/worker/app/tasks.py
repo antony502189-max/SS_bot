@@ -1,8 +1,10 @@
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from celery import Celery
+from celery.signals import after_setup_logger
 from sqlalchemy import select
 
 from apps.api.app.config import get_settings
@@ -25,6 +27,7 @@ from apps.api.app.models import (
     User,
     UserStatus,
 )
+from apps.api.app.observability import configure_logging
 from apps.api.app.services import queue_task_notifications, refresh_event_retention
 from apps.api.app.storage import delete_object, object_exists
 from apps.api.app.telegram_bot import build_telegram_bot
@@ -35,6 +38,7 @@ from apps.telegram_user_service.app.client import (
 )
 
 settings = get_settings()
+logger = logging.getLogger("ss_bot.worker")
 celery_app = Celery("ss_bot", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.beat_schedule = {
     "outbox-every-minute": {"task": "apps.worker.app.tasks.process_outbox", "schedule": 60.0},
@@ -66,6 +70,11 @@ _RETRYABLE_TELEGRAM_RESULTS = {
     TelegramResultKind.TEMPORARY_NETWORK_ERROR,
 }
 _MAX_OUTBOX_ATTEMPTS = 8
+
+
+@after_setup_logger.connect
+def configure_worker_logging(**_kwargs) -> None:
+    configure_logging(settings.log_level)
 
 
 class RetryableOutboxError(RuntimeError):
@@ -146,6 +155,14 @@ async def _send_due_notifications() -> None:
                 notification.last_error = None
             except Exception as exc:
                 notification.last_error = type(exc).__name__
+                logger.warning(
+                    "notification_delivery_failed",
+                    extra={
+                        "operation": "notification_delivery",
+                        "attempt": notification.attempts,
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 notification.next_attempt_at = now + timedelta(minutes=min(30, 2**notification.attempts))
                 notification.scheduled_at = notification.next_attempt_at
                 if notification.attempts >= 5:
@@ -295,7 +312,7 @@ async def invite_task_chat_member(
     entry.state = MembershipState.INVITED
     entry.invite_link = str(invite.value)
     entry.invite_link_created_at = now
-    entry.next_reminder_at = now + timedelta(minutes=30)
+    entry.next_reminder_at = now + timedelta(minutes=settings.invite_reminder_minutes)
     await notify(user.telegram_id, f"Вступите в рабочую группу «{task.title}»: {invite.value}")
 
 
@@ -502,12 +519,32 @@ async def _process_outbox() -> None:
                 event.last_error = None
             except RetryableOutboxError as exc:
                 event.last_error = str(exc)
+                logger.warning(
+                    "outbox_processing_retry",
+                    extra={
+                        "operation": "outbox_processing",
+                        "event_type": event.event_type,
+                        "outbox_event_id": str(event.id),
+                        "attempt": event.attempts,
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 if event.attempts >= _MAX_OUTBOX_ATTEMPTS:
                     event.processed_at = datetime.now(UTC)
                 else:
                     event.available_at = datetime.now(UTC) + timedelta(seconds=exc.delay_seconds)
             except Exception as exc:
                 event.last_error = type(exc).__name__
+                logger.exception(
+                    "outbox_processing_failed",
+                    extra={
+                        "operation": "outbox_processing",
+                        "event_type": event.event_type,
+                        "outbox_event_id": str(event.id),
+                        "attempt": event.attempts,
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 if event.attempts >= _MAX_OUTBOX_ATTEMPTS:
                     event.processed_at = datetime.now(UTC)
                 else:
@@ -544,6 +581,11 @@ async def _send_invite_reminders() -> None:
             return
         async with TelegramUserService() as telegram:
             for member, chat, user in rows:
+                if user.status != UserStatus.ACTIVE:
+                    member.state = MembershipState.FAILED
+                    member.next_reminder_at = None
+                    member.last_error = "user_inactive"
+                    continue
                 membership = await telegram.is_user_in_chat(chat.telegram_chat_id, user.telegram_username)
                 member.last_checked_at = now
                 if membership.kind == TelegramResultKind.SUCCESS:
@@ -556,7 +598,7 @@ async def _send_invite_reminders() -> None:
                     member.last_error = membership.error or membership.kind.value
                     member.next_reminder_at = now + timedelta(minutes=5)
                     continue
-                if member.invite_link and user.status == UserStatus.ACTIVE:
+                if member.invite_link:
                     try:
                         await notify(
                             user.telegram_id,
@@ -567,7 +609,7 @@ async def _send_invite_reminders() -> None:
                         member.last_error = None
                     except Exception as exc:
                         member.last_error = type(exc).__name__
-                member.next_reminder_at = now + timedelta(minutes=30)
+                member.next_reminder_at = now + timedelta(minutes=settings.invite_reminder_minutes)
         await session.commit()
 
 
