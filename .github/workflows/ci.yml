@@ -25,15 +25,15 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install -e '.[dev]'
-      - run: python -m ruff check .
+      - run: python -m ruff check . --output-format=github
       - run: alembic upgrade head
-      - run: python -m pytest
+      - run: python -m pytest -W error
       - run: >-
           docker run -d --name ss-bot-ci-minio -p 9000:9000
           -e MINIO_ROOT_USER=ss_bot -e MINIO_ROOT_PASSWORD=change-me-in-production
           minio/minio:latest server /data
       - run: until curl --fail --silent http://localhost:9000/minio/health/live; do sleep 1; done
-      - run: python -m pytest tests/test_storage_integration.py
+      - run: python -m pytest -W error tests/test_storage_integration.py
         env:
           RUN_MINIO_INTEGRATION: "1"
           S3_ENDPOINT_URL: http://localhost:9000
